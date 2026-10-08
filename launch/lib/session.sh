@@ -45,10 +45,11 @@ drive_codex_end() {
 
 drive_finish() {
     drive_exit_status=$?
-    trap - EXIT INT TERM HUP
+    trap - EXIT
+    trap '' INT TERM HUP # Finish teardown even if another signal arrives.
     drive_cleanup
     drive_codex_end || drive_exit_status=1
-    drive_wsl_unmount
+    drive_wsl_unmount || drive_exit_status=1
     exit "$drive_exit_status"
 }
 
@@ -135,10 +136,14 @@ drive_login() {
 
 drive_main() {
     set +x # Never trace credentials, including when called with bash -x.
+    drive_traps
+    # shellcheck disable=SC2034 # Consumed by drive_environment in drive.sh.
+    drive_wsl_clis_ready=0
     drive_os=$1 drive_entry=$2
     shift 2
     drive_shared=$(CDPATH='' cd -- "$(dirname -- "$drive_entry")/.." && pwd -P) || exit 1
-    drive_native=$(drive_discover "$drive_os" "$drive_shared") || exit 1
+    drive_discover "$drive_os" "$drive_shared" >/dev/null || exit 1
+    drive_native=$drive_discovered
     drive_target=$drive_os-$(drive_arch) || exit 1
     drive_host_home=$HOME
     drive_environment "$drive_shared" "$drive_native" "$drive_target" || exit 1
