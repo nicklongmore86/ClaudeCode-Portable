@@ -15,12 +15,12 @@ teardown() {
     local devices
     devices=$(attached) || return 1
     if [ -n "$devices" ]; then
-        # Only the original device is ours. Refuse ambiguity or a replacement.
+        # Only our acquired device is eligible; never detach a replacement.
         [[ $devices != *$'\n'* ]] || return 1
-        [ -n "$loop" ] || loop=${devices%%:*}
+        [ -n "$loop" ] || loop=${devices%%:*} # Acquire's interrupted assignment only.
         [ "${devices%%:*}" = "$loop" ] || return 1
         if findmnt -rn -S "$loop" >/dev/null; then
-            umount "$target" || return 1
+            umount "$loop" || return 1
         fi
         losetup -d "$loop" || return 1
         devices=$(attached) || return 1
@@ -28,45 +28,70 @@ teardown() {
     fi
     rmdir -- "$target" 2>/dev/null || printf 'Warning: empty WSL mountpoint remains: %s\n' "$target" >&2
 }
+recovery_log() {
+    # Unique, exclusive creation: never follow a pre-planted logfile symlink.
+    local message=$1
+    printf '%s\n' "$message" >&2
+    (umask 077; set -C
+        printf '%s\n' "$message" "Image: $image" "Device: $loop" "Lock: $lock" \
+            "Do NOT unplug. Stop all drive sessions. Inspect findmnt -S '$loop' and losetup -j '$image'." \
+            "If still attached, sync; sudo umount '$loop'; sudo losetup -d '$loop'." \
+            'Verify detach in all distros before repairing the image or manually recovering the lock.' \
+            > "$image.recovery.$token.log")
+}
 release_lock() {
-    owns_lock || return 1
+    if ! owns_lock; then
+        recovery_log 'WSL image teardown completed, but lock token changed or is unreadable; lock left untouched.'
+        return 1
+    fi
     rm -f -- "$lock/owner" && rmdir -- "$lock"
 }
 case $mode in
     acquire)
         command -v setsid >/dev/null || exit 1
         owns_lock || exit 1
-        # On failure or signals before the detached watcher starts, this root
-        # invocation owns rollback. The launcher still owns lock release.
+        # Privileged rollback covers signals during loop setup, including the
+        # assignment window; the watcher receives the exact acquired device.
         trap 'exit 1' HUP INT TERM
-        trap '[ -z "$loop" ] || teardown' EXIT
-        # Start before any kernel acquisition, including signals during losetup.
-        # No terminal, inherited pipes or sudo ticket is needed by the watcher.
+        trap teardown EXIT
+        loop=$(losetup --find --show "$image") || exit 1
         launcher_start=$(process_identity "$launcher") || exit 1
         [ -n "$launcher_start" ] || exit 1
         acquirer_start=$(process_identity "$$") || exit 1
-        # Inherit ignored signals across fork/exec, closing the small window
-        # before setsid has detached and the watch branch installs its traps.
+        # Inherit ignored signals across fork/exec. Signals in this tiny window
+        # are dropped, not deferred; the watcher still covers launcher death.
         trap '' HUP INT TERM
-        setsid bash "$0" watch "$launcher" "$image" "$target" "$lock" "$token" "" "$launcher_start" "$$" "$acquirer_start" </dev/null >/dev/null 2>&1 &
+        setsid bash "$0" watch "$launcher" "$image" "$target" "$lock" "$token" "$loop" "$launcher_start" "$$" "$acquirer_start" </dev/null >/dev/null 2>&1 &
         trap 'exit 1' HUP INT TERM
-        loop=$(losetup --find --show "$image") || exit 1
         mount -t ext4 -o nosuid,nodev "$loop" "$target" || exit 1
         trap - EXIT
         printf '%s\n' "$loop"
         ;;
     watch)
         trap '' HUP INT TERM
-        # Never race an in-flight privileged acquisition, even if the launcher
-        # was killed before sudo finished attaching/mounting.
-        while [ "$(process_identity "$acquirer")" = "$acquirer_start" ]; do sleep 0.2; done
-        # Lock-token changes also stop a watcher after normal launcher cleanup.
-        # No root process persists after release, even if the PID is reused.
-        while [ "$(process_identity "$launcher")" = "$launcher_start" ] && owns_lock; do
-            sleep 0.2
+        # Wait on process identity, not drive metadata. Once-per-second polling
+        # avoids repeated lock-file reads over DrvFS during long CLI sessions.
+        while [ "$(process_identity "$acquirer")" = "$acquirer_start" ]; do sleep 1; done
+        while [ "$(process_identity "$launcher")" = "$launcher_start" ]; do sleep 1; done
+        # A normal launcher exit has already detached and removed the lock.
+        devices=$(attached) || devices=unknown
+        if [ -z "$devices" ] && [ ! -e "$lock" ]; then exit 0; fi
+        # Twelve attempts with 2,4,8,16,30... second delays: at most 240 seconds
+        # of backoff. Never use lazy unmount: busy users must release the image.
+        delay=2
+        for ((attempt=1; attempt<=12; attempt++)); do
+            if details=$(teardown 2>&1); then
+                release_lock
+                exit $?
+            fi
+            if [ "$attempt" -lt 12 ]; then
+                sleep "$delay"
+                delay=$((delay * 2))
+                [ "$delay" -le 30 ] || delay=30
+            fi
         done
-        owns_lock || exit 0
-        teardown && release_lock
+        recovery_log "WSL watchdog teardown failed after 12 attempts; lock retained. $details"
+        exit 1
         ;;
     *) exit 2;;
 esac

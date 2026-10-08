@@ -70,6 +70,9 @@ drive_run() {
     (
         trap - EXIT INT TERM HUP
         set -m
+        # Only the CLI child gets its matched install directory before system
+        # PATH entries, so env-node shebangs use that installation's runtime.
+        if [ -n "${drive_cli_bin_dir:-}" ]; then export PATH="$drive_cli_bin_dir:$PATH"; fi
         "$@" <&0 &
         printf '%s\n' "$!" > "$drive_group_file"
         fg %+ >/dev/null
@@ -91,7 +94,7 @@ drive_codex() {
         return 1
     fi
     drive_auth_ready=1
-    drive_run "${DRIVE_CODEX_EXE:-$drive_bin/codex/bin/codex}" --no-daemon "$@"
+    drive_cli_bin_dir=${DRIVE_CODEX_BIN_DIR:-} drive_run "${DRIVE_CODEX_EXE:-$drive_bin/codex/bin/codex}" --no-daemon "$@"
     drive_codex_status=$?
     drive_codex_end || return 1
     return "$drive_codex_status"
@@ -107,7 +110,7 @@ drive_login() {
                 drive_fail "Linux 'claude' CLI not found in WSL. Install Claude Code inside WSL Ubuntu first."
                 return 1
             fi
-            drive_run "${DRIVE_CLAUDE_EXE:-$drive_bin/claude}" setup-token || return 1
+            drive_cli_bin_dir=${DRIVE_CLAUDE_BIN_DIR:-} drive_run "${DRIVE_CLAUDE_EXE:-$drive_bin/claude}" setup-token || return 1
             printf 'Paste the token (hidden): ' >&2
             IFS= read -r -s drive_token || return 1
             printf '\n' >&2
@@ -141,7 +144,9 @@ drive_main() {
     set +x # Never trace credentials, including when called with bash -x.
     # Never trust exported state from the parent process, including paths used
     # by cleanup. Reset the entire namespace before installing any trap.
-    for drive_state_name in ${!DRIVE_WSL_@}; do unset "$drive_state_name"; done
+    for drive_state_name in ${!drive_@} ${!DRIVE_WSL_@} ${!DRIVE_CLAUDE_@} ${!DRIVE_CODEX_@}; do
+        unset "$drive_state_name"
+    done
     # shellcheck disable=SC2034 # Used by drive_wsl_unmount.
     drive_cleanup_signal=
     drive_host_home=$HOME
@@ -154,7 +159,6 @@ drive_main() {
     drive_discover "$drive_os" "$drive_shared" >/dev/null || exit 1
     drive_native=$drive_discovered
     drive_target=$drive_os-$(drive_arch) || exit 1
-    drive_host_home=$HOME
     drive_environment "$drive_shared" "$drive_native" "$drive_target" || exit 1
     drive_action=${1:-menu}
     [ "$#" -eq 0 ] || shift
@@ -168,7 +172,7 @@ drive_main() {
                 if drive_is_wsl && [ -z "${DRIVE_CLAUDE_EXE:-}" ]; then
                     drive_fail "Linux 'claude' CLI not found. Install Claude Code inside WSL Ubuntu (e.g. 'npm install -g @anthropic-ai/claude-code'). Note: Windows .exe/.cmd shims are not used in WSL mode."
                 else
-                    drive_run "${DRIVE_CLAUDE_EXE:-$drive_bin/claude}" "$@"
+                    drive_cli_bin_dir=${DRIVE_CLAUDE_BIN_DIR:-} drive_run "${DRIVE_CLAUDE_EXE:-$drive_bin/claude}" "$@"
                 fi
                 ;;
             2|codex)

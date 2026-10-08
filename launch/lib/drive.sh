@@ -17,6 +17,7 @@ drive_is_wsl() {
 drive_resolve_wsl_cli() {
     # Consume PATH without word splitting or pathname expansion.
     drive_target_cli=$1
+    drive_resolved_cli='' drive_resolved_cli_dir=''
     drive_cli_home=${drive_host_home:-$HOME}
     drive_remaining_path=$PATH:$drive_cli_home/.local/bin:$drive_cli_home/.npm-global/bin:$drive_cli_home/.claude/local:$drive_cli_home/.bun/bin:
     # Resolve nvm's default alias without sourcing shell startup files or nvm.
@@ -46,6 +47,9 @@ drive_resolve_wsl_cli() {
     done <<EOF_NVM
 $drive_nvm_versions
 EOF_NVM
+    if [ "$drive_nvm_alias" = system ]; then
+        drive_remaining_path=/usr/local/bin:/usr/bin:$drive_remaining_path
+    fi
     drive_remaining_path=$drive_remaining_path${NVM_BIN:-}:$drive_nvm_default:
     while IFS= read -r drive_nvm_bin; do
         [ ! -d "$drive_nvm_bin" ] || drive_remaining_path=$drive_remaining_path$drive_nvm_bin:
@@ -62,7 +66,10 @@ EOF_NVM
         case "$drive_check_path" in *.exe|*.cmd|*.bat|/mnt/*) continue;; esac
         case $(stat -f -c %T -- "$drive_check_path") in v9fs|9p|virtiofs|drvfs) continue;; esac
         [ "$(head -c 2 -- "$drive_check_path")" != MZ ] || continue
-        printf '%s\n' "$drive_check_path"
+        drive_resolved_cli=$drive_check_path
+        # Keep the search directory, not the symlink target's node_modules dir.
+        drive_resolved_cli_dir=$(CDPATH='' cd -- "$drive_dir_entry" && pwd -P) || return 1
+        printf '%s\n' "$drive_resolved_cli"
         return 0
     done
     return 1
@@ -206,7 +213,8 @@ drive_wsl_discover() {
 }
 
 drive_wsl_unmount() {
-    drive_wsl_owns_lock || return 0
+    # Teardown follows our in-memory acquisition state, never mutable lock data.
+    [ "${DRIVE_WSL_LOCK_HELD:-0}" = 1 ] || return 0
     drive_wsl_cleanup_status=0
     if [ "${DRIVE_WSL_ATTACH_ATTEMPT:-0}" = 1 ]; then
         # Recover an attachment whose command was interrupted before assignment.
@@ -227,7 +235,7 @@ drive_wsl_unmount() {
                 if [ "$DRIVE_WSL_BACKEND" = udisks ]; then
                     udisksctl unmount -b "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
                 else
-                    sudo -n umount "$DRIVE_WSL_MOUNT_TARGET" || drive_wsl_cleanup_status=1
+                    sudo -n umount "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
                 fi
             fi
             if [ "$drive_wsl_cleanup_status" = 0 ]; then
@@ -242,7 +250,9 @@ drive_wsl_unmount() {
             fi
         fi
     fi
-    [ -z "${DRIVE_WSL_PARTIAL:-}" ] || rm -f -- "$DRIVE_WSL_PARTIAL" || drive_wsl_cleanup_status=1
+    if [ -n "${DRIVE_WSL_PARTIAL:-}" ] && drive_wsl_owns_lock; then
+        rm -f -- "$DRIVE_WSL_PARTIAL" || drive_wsl_cleanup_status=1
+    fi
     if [ "$drive_wsl_cleanup_status" != 0 ]; then
         if [ "${DRIVE_WSL_WATCHDOG:-0}" = 1 ]; then
             printf 'Privileged WSL watchdog will retry teardown after this launcher exits. Keep the drive connected until the session lock disappears.\n' >&2
@@ -255,7 +265,10 @@ Unmount with sudo umount '${DRIVE_WSL_MOUNT_TARGET:-${DRIVE_WSL_LOOP_DEV:-unknow
     if [ -n "${DRIVE_WSL_TMP_MOUNT:-}" ]; then
         rmdir -- "$DRIVE_WSL_TMP_MOUNT" 2>/dev/null || printf 'Warning: empty WSL mountpoint remains: %s\n' "$DRIVE_WSL_TMP_MOUNT" >&2
     fi
-    drive_wsl_owns_lock || return 1
+    if ! drive_wsl_owns_lock; then
+        drive_fail "WSL image teardown completed, but its lock token changed or cannot be read. Lock left untouched: $DRIVE_WSL_LOCK. Do NOT unplug until all sessions are checked and the lock is manually recovered."
+        return 1
+    fi
     rm -f "$DRIVE_WSL_LOCK/owner" && rmdir "$DRIVE_WSL_LOCK" || return 1
     DRIVE_WSL_LOCK_HELD=0
     unset DRIVE_WSL_LOOP_DEV DRIVE_WSL_MOUNT_TARGET DRIVE_WSL_MOUNTED DRIVE_WSL_ATTACH_ATTEMPT DRIVE_WSL_TMP_MOUNT
@@ -313,8 +326,15 @@ drive_environment() {
             return 1
         fi
         if [ "${drive_wsl_clis_ready:-0}" != 1 ]; then
-            DRIVE_CLAUDE_EXE=$(drive_resolve_wsl_cli claude) || DRIVE_CLAUDE_EXE=
-            DRIVE_CODEX_EXE=$(drive_resolve_wsl_cli codex) || DRIVE_CODEX_EXE=
+            DRIVE_CLAUDE_EXE='' DRIVE_CLAUDE_BIN_DIR='' DRIVE_CODEX_EXE='' DRIVE_CODEX_BIN_DIR=''
+            if drive_resolve_wsl_cli claude >/dev/null; then
+                # shellcheck disable=SC2034 # Child PATH in session.sh.
+                DRIVE_CLAUDE_EXE=$drive_resolved_cli DRIVE_CLAUDE_BIN_DIR=$drive_resolved_cli_dir
+            fi
+            if drive_resolve_wsl_cli codex >/dev/null; then
+                # shellcheck disable=SC2034 # Child PATH in session.sh.
+                DRIVE_CODEX_EXE=$drive_resolved_cli DRIVE_CODEX_BIN_DIR=$drive_resolved_cli_dir
+            fi
             drive_wsl_clis_ready=1
         fi
         export DRIVE_CLAUDE_EXE DRIVE_CODEX_EXE

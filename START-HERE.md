@@ -184,7 +184,7 @@ When running inside WSL2 (e.g. Ubuntu on Windows), execute the Linux launcher di
 ```
 
 The launcher automatically detects the WSL2 environment:
-- **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Discovery works with non-interactive `wsl --exec` launches: it checks PATH, then the original distro home's `~/.local/bin`, `~/.npm-global/bin`, `~/.claude/local`, `~/.bun/bin`, active/default nvm bins (preferring `~/.nvm/alias/default`), remaining nvm versions newest first, `/usr/local/bin` and `/usr/bin`. No startup files are sourced. Windows executables (`.exe` / `.cmd` / `.bat`, `/mnt/*`, DrvFS/9p/virtiofs and PE shims) are rejected after symlink resolution.
+- **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Discovery works with non-interactive `wsl --exec` launches: it checks PATH, then the original distro home's `~/.local/bin`, `~/.npm-global/bin`, `~/.claude/local`, `~/.bun/bin`, active/default nvm bins (preferring `~/.nvm/alias/default`), remaining nvm versions newest first, `/usr/local/bin` and `/usr/bin`. With nvm's default set to `system`, system directories take priority. Each CLI child prepends its matched install directory to PATH so an `env node` shebang uses that installation's Node, even without a login profile. No startup files are sourced. Windows executables (`.exe` / `.cmd` / `.bat`, `/mnt/*`, DrvFS/9p/virtiofs and PE shims) are rejected after symlink resolution.
 - **Drive-resident ext4 state**: Runtime state, caches, temp files, and Codex SQLite databases are stored in `AI-SHARED/state/wsl-state.ext4`. First run creates and formats a temporary image inside the session lock directory, owned by your Linux UID/GID, then renames it into place. Formatting requires e2fsprogs >= 1.42 for `root_owner`. The default is 4 GiB; set `PORTABLE_AI_WSL_IMAGE_SIZE=2G` (integer `M` or `G`, minimum `64M`) before first run to change it. Existing images are not resized. **exFAT allocates the full size; this is not sparse storage.** Free space is checked first. FAT32 cannot hold the default 4 GiB file: use exFAT or a smaller size. The FAT32 pre-check applies only to directly visible filesystems; DrvFS reports v9fs/virtiofs instead, so allocation errors are handled and the partial file removed.
 - **Shared authoritative credentials**: `claude-oauth-token` and `codex-auth.json` on `AI-SHARED/credentials/` remain authoritative and synchronized across Windows, native Linux, macOS, and WSL2.
 - **Clean teardown**: Every exit runs cleanup: sync, unmount, then detach the loop device. A failure returns a non-zero status and warns **do NOT unplug the drive**; the image lock remains for recovery. A sudo mount uses an owned, private temporary directory under `$XDG_RUNTIME_DIR` (or `/tmp`) with `nosuid,nodev`. It is removed after successful cleanup; a crash or failed unmount can leave this empty host directory behind. Sudo/udisks may also write host logs and sudo timestamps; this mode does not promise zero host files.
@@ -199,15 +199,23 @@ unavailable, the launcher asks on `/dev/tty` before using sudo to attach/mount
 the image. Without a controlling terminal it fails clearly; piped CLI input is
 never consumed as consent. It never falls back to host runtime state.
 
-The same sudo invocation starts a root-owned, detached watchdog before attaching
-and mounting. On normal exit the launcher refreshes its sudo ticket (`sudo -v`)
+The sudo invocation attaches the loop, then starts a root-owned, detached
+watchdog with that exact device before mounting. Privileged rollback handles
+signals during attachment. On normal exit the launcher refreshes its sudo ticket (`sudo -v`)
 and tears down itself. On HUP/TERM it uses `sudo -n` only. If authentication has
 expired or the terminal has closed, the watchdog waits for acquisition and the
 launcher to exit, then syncs, unmounts, detaches and verifies no attachment remains.
-Only after successful teardown may the watchdog remove the matching session-token
-lock. The launcher follows the same verification rule. Both paths are idempotent;
-the watchdog exits after normal cleanup or its single recovery attempt, including
-failure. If both fail, the lock remains for manual recovery. Keep the drive
+Teardown follows the acquired device, even if the owner token changes or becomes
+unreadable; the token is checked only before releasing the lock. A mismatch leaves
+the lock untouched, warns and returns non-zero after teardown. Both paths unmount
+by loop device and are idempotent. The watchdog polls process identity once per
+second without reading the drive lock each tick. It retries failed teardown up to
+12 times, with 2, 4, 8, 16, then 30-second delays (240 seconds of total backoff).
+It never lazily unmounts a busy image. After exhausted retries or an ownership
+mismatch, it writes recovery instructions to
+`state/wsl-state.ext4.recovery.<session-token>.log` on the drive and exits,
+leaving the lock for manual recovery. The launcher still returns non-zero when
+its own teardown fails; watchdog recovery happens after the launcher exits. Keep the drive
 connected until the lock disappears; a closed terminal cannot display warnings.
 An empty mountpoint removal failure only warns and does not retain the drive lock.
 The watchdog cannot survive WSL shutdown, power loss or forced termination of the
