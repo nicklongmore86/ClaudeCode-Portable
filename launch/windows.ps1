@@ -3,23 +3,30 @@ $ErrorActionPreference = 'Stop'
 Set-PSDebug -Off
 . (Join-Path $PSScriptRoot 'lib\windows.ps1')
 $shared = Split-Path -Parent $PSScriptRoot
-$native = Find-DriveNative
-$architecture = $env:PROCESSOR_ARCHITEW6432
-if (!$architecture) { $architecture = $env:PROCESSOR_ARCHITECTURE }
-$arch = switch ($architecture) { 'AMD64' {'x64'} 'ARM64' {'arm64'} default {throw "Unsupported CPU: $architecture"} }
-$bin = Join-Path $native "bin\win32-$arch"
-$childEnv = Get-DriveEnvironment $shared $native "win32-$arch"
-# Provisioning compiles this small supervisor DLL on a Windows prep machine.
-# Loading it avoids Add-Type compiler temp writes on target hosts (PowerShell 5).
-Add-Type -Path (Join-Path $native 'tools\DriveChild.dll')
+. (Join-Path $PSScriptRoot 'lib\wsl.ps1')
+$nativeReady = $false
 $result = 0
 while ($true) {
     $selected = $Action
     if ($Action -eq 'menu') {
-        Write-Host "`n1 Claude Code`n2 Codex`n3 Dashboard`n4 Login setup`n5 Audit`n6 Exit"
+        Write-Host "`n1 Claude Code`n2 Codex`n3 Dashboard`n4 Login setup`n5 Audit`n6 Exit`n7 WSL mode"
         $selected = Read-Host 'Choose'
     }
     try {
+        if ($selected -in '1','claude','2','codex','3','dashboard','4','login','5','audit') {
+            if (!$nativeReady) {
+                $native = Find-DriveNative
+                $architecture = $env:PROCESSOR_ARCHITEW6432
+                if (!$architecture) { $architecture = $env:PROCESSOR_ARCHITECTURE }
+                $arch = switch ($architecture) { 'AMD64' {'x64'} 'ARM64' {'arm64'} default {throw "Unsupported CPU: $architecture"} }
+                $bin = Join-Path $native "bin\win32-$arch"
+                # Provisioning compiles this small supervisor DLL on a Windows prep machine.
+                # Loading it avoids Add-Type compiler temp writes on target hosts (PowerShell 5).
+                Add-Type -Path (Join-Path $native 'tools\DriveChild.dll')
+                $nativeReady = $true
+            }
+            $childEnv = Get-DriveEnvironment $shared $native "win32-$arch"
+        }
         switch ($selected) {
             {$_ -in '1','claude'} {
                 if (!(Test-Path -LiteralPath $childEnv.CLAUDE_CODE_GIT_BASH_PATH)) { throw 'Portable Git is missing; complete provisioning first.' }
@@ -65,10 +72,10 @@ while ($true) {
                 }
                 & (Join-Path $shared 'tools\audit\audit.ps1') @auditArgs
             }
+            {$_ -in '7','wsl'} { $result = Invoke-DriveWsl $PSScriptRoot $CliArgs }
             {$_ -in '6','exit'} { exit 0 }
-            default { throw 'Choose claude, codex, dashboard, login, audit or exit' }
+            default { throw 'Choose claude, codex, dashboard, login, audit, wsl or exit' }
         }
     } catch { Write-Error $_ -ErrorAction Continue; $result = 1 }
     if ($Action -ne 'menu') { exit $result }
-    $childEnv = Get-DriveEnvironment $shared $native "win32-$arch"
 }

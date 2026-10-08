@@ -95,6 +95,34 @@ AI-WIN/  AI-MAC/  AI-LINUX/   (same shape on each)
 8. On exit: ensure no child processes remain so the drive can be ejected.
 
 ## WSL2 Mode (Linux launcher inside WSL)
+
+Windows entry: choose **7 WSL mode** in `AI-SHARED/launch/windows.cmd`, or run
+`S:\launch\windows.cmd wsl [linux-launcher-action] [args...]` (actual AI-SHARED
+letter). All launchers are siblings on AI-SHARED; AI-WIN is only needed for the
+native Windows actions. WSL selection occurs before native Windows initialization.
+
+The entrypoint requires an existing `wsl.exe` and installed distro, decodes WSL
+list output as UTF-16LE, and selects `PORTABLE_AI_WSL_DISTRO` when supplied,
+otherwise the marked default. A sole distro is selected automatically; multiple
+distros without a default require a numbered choice. An invalid override or
+missing WSL/distro fails non-zero with preparation guidance. The host owner must
+already have prepared WSL2 and the Linux CLI/mount prerequisites described below.
+
+Paths come from the launcher's own directory and the current project directory,
+never assumed drive letters or `/mnt` paths. Each is translated with
+`wsl.exe -d <distro> --exec wslpath -a <Windows-path>`, then the launcher starts
+`wsl.exe -d <distro> --cd <project-dir> --exec bash <linux.sh> <args...>` with
+inherited console handles. Explicit `--exec` bypasses the distro's default shell;
+arguments (including spaces/quotes) are passed as data. The direct action forwards
+the Linux exit status. Translation failure stops launch.
+
+The Windows bridge performs no installation, default changes, registry or
+`.wslconfig` edits, or file writes on Windows/in the distro. Existing Linux
+state/credential handling remains unchanged. OS-managed WSL activity remains
+subject to the host-trace limits below. Real Windows testing of distro selection,
+path/argument forwarding, interactive login and exit status remains required;
+Linux CI static checks and skip-guarded PowerShell tests do not establish it.
+
 When `launch/linux.sh` is executed inside WSL2 (auto-detected via `/proc/version` or `WSL_DISTRO_NAME`):
 1. **Host CLIs**: Uses the official Linux `claude` and `codex` CLIs installed inside the WSL2 Linux environment (rejecting any Windows `.exe` / `.cmd` / `/mnt/*` shims).
 2. **Drive-resident state**: Rather than writing state to the host WSL rootfs, the launcher maintains all runtime state, caches, temp files, and Codex SQLite databases inside a drive-resident ext4 image (`AI-SHARED/state/wsl-state.ext4`).

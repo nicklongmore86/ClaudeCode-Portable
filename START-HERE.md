@@ -177,7 +177,32 @@ CODEX_HOME and CODEX_SQLITE_HOME are under `state/codex`, never shared exFAT or 
 
 ### WSL2 Mode (Linux in Windows Subsystem for Linux)
 
-When running inside WSL2 (e.g. Ubuntu on Windows), execute the Linux launcher directly:
+From Windows, open `AI-SHARED\launch\windows.cmd` and choose **7 WSL mode**,
+or run from your project's Command Prompt (replace `S:` with AI-SHARED):
+
+```bat
+S:\launch\windows.cmd wsl
+S:\launch\windows.cmd wsl codex exec "explain this repo"
+set "PORTABLE_AI_WSL_DISTRO=Ubuntu"
+S:\launch\windows.cmd wsl claude
+```
+
+WSL2 and at least one distro must already be prepared by the host owner. The
+launcher uses the default distro, or `PORTABLE_AI_WSL_DISTRO` when set in the
+current terminal (`$env:PORTABLE_AI_WSL_DISTRO='Ubuntu'` in PowerShell). With one
+distro it uses that distro; with several and no default it asks you to choose.
+Use `wsl.exe -l -v` to inspect existing distros. Missing WSL/distros fail with
+guidance; the launcher never installs WSL, changes its default, edits host
+configuration, or creates files on Windows or in the distro.
+
+The Windows entrypoint runs the sibling `AI-SHARED/launch/linux.sh`, translating
+both its path and your current project directory through that distro's `wslpath`.
+Both locations must be accessible in WSL. Arguments and the direct action's exit
+code pass through; prompts remain interactive. This entrypoint needs no AI-WIN
+binaries or supervisor DLL. Native Windows options still use AI-WIN as before.
+Real Windows validation of this entrypoint is still required.
+
+When already inside WSL2 (e.g. Ubuntu on Windows), you can still execute the Linux launcher directly:
 
 ```sh
 /mnt/d/launch/linux.sh          # replace 'd' with your AI-SHARED drive letter
