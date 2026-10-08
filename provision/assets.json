@@ -1,0 +1,97 @@
+{
+  "claude_version": "2.1.247",
+  "codex_version": "rust-v0.161.0",
+  "node_version": "24.21.0",
+  "claude_sums": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/SHASUMS256.txt",
+  "claude_signer": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+  "targets": {
+    "win32-x64": {
+      "claude": {
+        "url": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/claude-win32-x64.zip",
+        "sha256": "fc4f2ff5bc4af613f92174a2b9051a52a9c2c557ab45796a248d6811044ef808"
+      },
+      "codex": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-package-x86_64-pc-windows-msvc.tar.gz",
+        "sha256": "f3093b2483f857ae9085e87e1cc0d22488f65d2374889e4466c23a4f3d374c2d"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+        "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541"
+      }
+    },
+    "win32-arm64": {
+      "claude": {
+        "url": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/claude-win32-arm64.zip",
+        "sha256": "7e7080ee8c6c44850d2d898a51da5e2cc6e211b9c34e7238660eb5108bdd18a1"
+      },
+      "codex": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-package-aarch64-pc-windows-msvc.tar.gz",
+        "sha256": "9c84eebb38e59166f3db2fb53f9aa7633593f8defec045aa86b467e4f4291b05"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-arm64.zip",
+        "sha256": "8779b1bde1d39f8d420e3b57aa657b39891af434d3de44a919044cec06785921"
+      }
+    },
+    "darwin-x64": {
+      "claude": {
+        "url": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/claude-darwin-x64.tar.gz",
+        "sha256": "b51cf8ffdde4bd3f9ab3a4b9b1f1176ca3120c66a7a5fbccce6e5c88f0d9a049"
+      },
+      "codex": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-package-x86_64-apple-darwin.tar.gz",
+        "sha256": "53f7c9081ab83684a3d4fb35dbc4b05d3ebb204beb2eab000626c15f0b15e738"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz",
+        "sha256": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097"
+      }
+    },
+    "darwin-arm64": {
+      "claude": {
+        "url": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/claude-darwin-arm64.tar.gz",
+        "sha256": "77709dc499a57c3106831162fed02f7c520897bb061cfd1b4d06110f8ab871ce"
+      },
+      "codex": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-package-aarch64-apple-darwin.tar.gz",
+        "sha256": "f0feee8537daf8dd6b4e0a36e764549ad14afdbb419d8775aeab9feb20182313"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+        "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057"
+      }
+    },
+    "linux-x64": {
+      "claude": {
+        "url": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/claude-linux-x64-musl.tar.gz",
+        "sha256": "c7d74dd6bc9dc6911ea0ac877c48839ee31a9a432c98ddc33403ad4d3a48a845"
+      },
+      "codex": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-package-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "04d8ab9dbcb9df0edf3c67dca5072a374babfdf762a9bc4ae649ae140b8e2cf0"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz",
+        "sha256": "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff"
+      }
+    },
+    "linux-arm64": {
+      "claude": {
+        "url": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/claude-linux-arm64-musl.tar.gz",
+        "sha256": "cf0f31058173cbfa962a1aba1ac31d49975c87458b1514e258bc55c017fe7efe"
+      },
+      "codex": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-package-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "3c02e2ae34be0d06e62557e98fc5c0a783bec5a2fed406fe00e565803bf84ee8"
+      },
+      "node": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.gz",
+        "sha256": "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5"
+      }
+    }
+  },
+  "git": {
+    "url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/PortableGit-2.56.0.2-64-bit.7z.exe",
+    "sha256": "075e158ef8e1f0ab80b347e245405d3eca735c2dc88fd8e032e137d0ca61f61b"
+  }
+}

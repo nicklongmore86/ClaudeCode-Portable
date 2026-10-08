@@ -1,5 +1,41 @@
 # Claude Code Portable — One USB. Any Model.
 
+> **Windows “format the disk” prompt: click Cancel.**
+> **macOS “disk not readable” prompt: click Ignore.** Never initialize or format
+> a partition from these prompts: you could destroy AI-MAC (APFS) or AI-LINUX (ext4).
+
+
+## Partitioned portable AI drive
+
+This fork now uses the shared **AI-SHARED (exFAT), AI-WIN (NTFS), AI-MAC
+(APFS), AI-LINUX (ext4)** layout. Start with [START-HERE.md](START-HERE.md)
+for provisioning, verified pinned downloads, first-time subscription login,
+launchers, audit commands and platform limitations. The complete contract is
+[docs/DRIVE-SPEC.md](docs/DRIVE-SPEC.md).
+
+Provisioning uses native GPT type GUIDs and sets bit 63 (no default drive letter)
+only on AI-MAC/AI-LINUX; no hidden/read-only flags are set. After creating APFS
+with diskutil, follow the [post-format verification/reapply steps](START-HERE.md)
+before using Windows. Preservation of that GPT attribute by diskutil is not
+guaranteed by its manual, and OS warning prompts can still occur.
+
+**Hardware:** SATA-to-USB 3.0 adapters/enclosures use a
+[5 Gbps USB link](https://usb.org/document-library/inter-chip-supplement-usb-revision-30-specification-revision-102)
+(actual transfers are slower). Prefer UASP + TRIM-capable chipsets/firmware,
+verify support for the host OS, and protect a bare 2.5-inch drive with an
+enclosure. Check SSD versus HDD in Optimize Drives or
+[CrystalDiskInfo](https://crystalmark.info/en/software/CrystalDiskInfo/);
+see [hardware notes](START-HERE.md#hardware-notes) for bridge limitations.
+
+Claude Code and OpenAI Codex run as official native binaries for x64 and arm64
+on all three OSes. Node is retained only for the existing dashboard and its
+SDK/provider adapters. Launch from `AI-SHARED/launch/`; installation and updates
+are prep-machine operations under `provision/`. The older single-partition
+bootstrap instructions below describe the upstream dashboard and are superseded
+by START-HERE for installation and launching this fork. Upstream MIT attribution
+is preserved.
+
+
 > **Run Claude Code from a USB drive or any folder—no global installation required. Connect to multiple AI providers, including OpenRouter, Google Gemini, NVIDIA NIM, custom APIs, and more.**
 >
 > Plug in. Launch. Code. Take it anywhere.

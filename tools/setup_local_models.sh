@@ -11,7 +11,6 @@ DIM='\033[90m'; MAGENTA='\033[35m'; BOLD='\033[1m'; RESET='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_DIR="$ROOT_DIR/data"
-ENV_FILE="$DATA_DIR/ai_settings.env"
 MODELS_DIR="$DATA_DIR/models"
 OLLAMA_DIR="$DATA_DIR/ollama"
 
@@ -83,7 +82,6 @@ if [ -d "$MANIFEST_DIR" ]; then
             # Get size from manifest JSON
             SIZE_BYTES=$(grep -o '"size"[[:space:]]*:[[:space:]]*[0-9]*' "$tag_file" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')
             [ "${SIZE_BYTES:-0}" -lt 100000000 ] 2>/dev/null && continue
-            SIZE_GB=$(awk "BEGIN {printf \"%.1f\", ${SIZE_BYTES:-0}/1073741824}")
             DL_TAGS+=("$full_tag")
             DL_NAMES+=("$full_tag")
         done
@@ -104,7 +102,7 @@ echo -e "      ${DIM}Browse ALL models here: ${CYAN}https://ollama.com/library${
 echo -e "  ${DIM}------------------------------------------------${RESET}"
 echo -e "  ${DIM}Enter number(s) separated by commas (e.g. 1,5)${RESET}"
 echo ""
-read -p "  Your choice: " USER_CHOICE
+read -r -p "  Your choice: " USER_CHOICE
 
 if [ -z "$USER_CHOICE" ]; then
     echo -e "\n  ${YELLOW}No input! Defaulting to [3] Gemma 4 E4B...${RESET}"
@@ -148,7 +146,7 @@ done
 if [ "$HAS_CUSTOM" -eq 1 ]; then
     echo ""
     echo -e "${GREEN}  ---- Custom Model Setup ----${RESET}"
-    read -p "  Ollama Tag (e.g. mistral-nemo, phi3): " CUSTOM_TAG
+    read -r -p "  Ollama Tag (e.g. mistral-nemo, phi3): " CUSTOM_TAG
     if [ -n "$CUSTOM_TAG" ]; then
         SELECTED_MODELS+=("99")
         SELECTED_NAMES+=("Custom: $CUSTOM_TAG")
@@ -168,7 +166,7 @@ if [ -n "$FREE_KB" ]; then
     echo -e "\n  ${DIM}USB Free Space: ~${FREE_GB} GB${RESET}"
     if [ "$FREE_GB" -lt 5 ]; then
         echo -e "  ${RED}WARNING: You have very low disk space (${FREE_GB} GB). Models may fail to download.${RESET}"
-        read -p "  Continue anyway? (y/N): " CONT
+        read -r -p "  Continue anyway? (y/N): " CONT
         [[ ! "$CONT" =~ ^[Yy]$ ]] && exit 1
     fi
 fi
@@ -190,11 +188,11 @@ else
         # If it extracts as bin/ollama, move it
         if [ -f "$OLLAMA_DIR/bin/ollama" ]; then
             mv "$OLLAMA_DIR/bin/ollama" "$OLLAMA_EXE"
-            rm -rf "$OLLAMA_DIR/bin"
+            rm -rf "${OLLAMA_DIR:?}/bin"
         fi
         
         chmod +x "$OLLAMA_EXE"
-        [ "$PLATFORM" = "darwin" ] && xattr -d com.apple.quarantine "$OLLAMA_EXE" 2>/dev/null || true
+        if [ "$PLATFORM" = "darwin" ]; then xattr -d com.apple.quarantine "$OLLAMA_EXE" 2>/dev/null || true; fi
         echo -e "      ${GREEN}Engine Installed successfully!${RESET}"
     else
         echo -e "      ${RED}ERROR: Failed to download engine!${RESET}"
@@ -212,7 +210,7 @@ sleep 5
 
 ERRORS=0
 for i in "${!SELECTED_TAGS[@]}"; do
-    TAG="${SELECTED_TAGS[$i]}"
+    TAG="${SELECTED_TAGS[i]}"
     NAME="${SELECTED_NAMES[$i]}"
     
     if [[ "$TAG" == http* ]] && [[ "$TAG" == *.gguf* ]]; then
@@ -239,7 +237,7 @@ for i in "${!SELECTED_TAGS[@]}"; do
         # Only skip if file is FULLY downloaded AND ollama has it imported
         if [ "$FILE_COMPLETE" -eq 1 ] && "$OLLAMA_EXE" show "$MODEL_NAME" >/dev/null 2>&1; then
             echo -e "  ${GREEN}✅ $NAME fully downloaded ($(( EXISTING_SIZE / 1024 / 1024 )) MB) & imported — skipping!${RESET}"
-            SELECTED_TAGS[$i]="$MODEL_NAME"
+            SELECTED_TAGS[i]="$MODEL_NAME"
             continue
         fi
 
@@ -263,7 +261,7 @@ for i in "${!SELECTED_TAGS[@]}"; do
         pushd "$MODELS_DIR" >/dev/null
         if "$OLLAMA_EXE" create "$MODEL_NAME" -f "Modelfile-$MODEL_NAME"; then
             echo -e "      ${GREEN}Import complete!${RESET}"
-            SELECTED_TAGS[$i]="$MODEL_NAME"
+            SELECTED_TAGS[i]="$MODEL_NAME"
         else
             echo -e "      ${RED}FAILED to import custom model: $FILE_NAME${RESET}"
             ERRORS=$((ERRORS+1))
@@ -296,7 +294,7 @@ wait "$SERVER_PID" 2>/dev/null || true
 # Record Models for the Dashboard
 if [ ${#SELECTED_TAGS[@]} -gt 0 ]; then
     for i in "${!SELECTED_TAGS[@]}"; do
-        echo "${SELECTED_TAGS[$i]}|${SELECTED_NAMES[$i]}|LOCAL" >> "$MODELS_DIR/installed-models.txt"
+        echo "${SELECTED_TAGS[i]}|${SELECTED_NAMES[$i]}|LOCAL" >> "$MODELS_DIR/installed-models.txt"
     done
     sort -u "$MODELS_DIR/installed-models.txt" -o "$MODELS_DIR/installed-models.txt"
 fi

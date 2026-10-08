@@ -13,3 +13,11 @@
 # ── Node.js ───────────────────────────────────────────────────────
 node_modules/
 npm-debug.log*
+
+# Provisioning/test artifacts (never commit drive credentials)
+/.test-results.log
+/.drive-test-*/
+/.partition-test-*/
+/.provision-test-*/
+/.verification/
+__pycache__/
