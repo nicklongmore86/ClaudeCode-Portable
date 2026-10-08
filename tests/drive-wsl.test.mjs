@@ -8,7 +8,7 @@ const launcher = readFileSync(new URL('../launch/windows.ps1', import.meta.url),
 const cmd = readFileSync(new URL('../launch/windows.cmd', import.meta.url), 'utf8');
 
 test('Windows menu and direct WSL action bypass native initialization', () => {
-  assert.match(launcher, /7 WSL mode/);
+  assert.match(launcher, /7 WSL mode`n6 Exit/);
   assert.match(launcher, /'7','wsl'.*Invoke-DriveWsl \$PSScriptRoot \$CliArgs/);
   const nativeGuard = launcher.match(/if \(\$selected -in ([^)]+)\) \{\s+if \(!\$nativeReady\)/);
   assert.ok(nativeGuard);
@@ -23,10 +23,10 @@ test('WSL detection captures lists with explicit UTF-16LE decoding', () => {
   assert.match(helper, /Get-Command wsl\.exe -CommandType Application/);
   assert.match(helper, /@\('-l', '-q'\) -Capture -List/);
   assert.match(helper, /@\('-l', '-v'\) -Capture -List/);
-  assert.match(helper, /if \(\$List\) \{ \[Text.Encoding\]::Unicode \} else \{ \[Text.Encoding\]::UTF8 \}/);
+  assert.match(helper, /if \(\$unicode\) \{ \[Text.Encoding\]::Unicode \} else \{ \[Text.Encoding\]::UTF8 \}/);
   assert.match(helper, /\$info.EnvironmentVariables.Remove\('WSL_UTF8'\)/);
-  assert.match(helper, /\$info.StandardOutputEncoding = \$encoding/);
-  assert.match(helper, /ReadToEndAsync\(\)/);
+  assert.match(helper, /ConvertFrom-WslBytes \$outBuffer.ToArray\(\) -List:\$List/);
+  assert.match(helper, /ConvertFrom-WslBytes \$errBuffer.ToArray\(\)/);
   assert.match(helper, /listing.Code -ne 0/);
   assert.match(helper, /No WSL distro is installed/);
 });
@@ -48,7 +48,7 @@ test('WSL paths and argument arrays bypass shell evaluation and inherit the cons
   assert.match(helper, /ConvertTo-WslPath \$executable \$distro \(Get-Location\).ProviderPath/);
   assert.match(helper, /translated.Code -ne 0/);
   const finalCall = helper.split('\n').find(line => line.includes('return Invoke-WslProcess $executable'));
-  assert.match(finalCall, /'--cd', \$workingDirectory, '--exec', 'bash', \$linuxPath\) \+ \$CliArgs/);
+  assert.match(finalCall, /'--cd', \$workingDirectory, '--exec', 'bash', \$linuxPath\) \+ \$forwarded/);
   assert.doesNotMatch(finalCall, /-Capture/);
   assert.match(helper, /return \$process.ExitCode/);
   assert.match(helper, /\$info.UseShellExecute = \$false/);
@@ -60,8 +60,66 @@ test('WSL helper contains no installer, host writes, compiler or native-drive de
   assert.doesNotMatch(helper, /bash['"],\s*['"]-c|\/mnt\/[a-z]\//);
 });
 
-const available = spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' }).status === 0;
-test('PowerShell WSL parsing, selection, quoting, paths and dispatch mocks', { skip: !available && 'pwsh is not installed' }, () => {
-  const result = spawnSync('pwsh', ['-NoProfile', '-File', 'tests/drive-wsl.ps1'], { encoding: 'utf8' });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
+test('Captured helpers close stdin, bound waits and surface diagnostics without changing session stdin', () => {
+  assert.match(helper, /if \(\$Capture\) \{\s*\$info.RedirectStandardInput = \$true/);
+  assert.ok(helper.indexOf('$process.Start()') < helper.indexOf('$process.StandardInput.Close()'));
+  assert.ok(helper.indexOf('$process.StandardInput.Close()') < helper.indexOf('BaseStream.CopyToAsync'));
+  assert.match(helper, /WaitForExit\(\$TimeoutMilliseconds\)/);
+  assert.match(helper, /\$process.Kill\(\)/);
+  assert.match(helper, /WaitAll\([^\n]+, 5000\)/);
+  for (const name of ['listing', 'verbose', 'translated', 'reachable']) {
+    assert.ok(helper.includes(`Format-WslFailure $${name}`), `missing diagnostics: ${name}`);
+  }
+  assert.match(helper, /Write-Host 'Starting WSL/);
 });
+
+test('Preflight rejects WSL1, supports Sysnative, checks reachability and filters only null arguments', () => {
+  assert.match(helper, /Assert-Wsl2Distro \$names \$verbose.Output \$distro/);
+  assert.match(helper, /\$Matches\[1\] -ne '2'/);
+  assert.match(helper, /Sysnative\/wsl.exe/);
+  assert.match(helper, /'--exec', 'test', '-f', \$linuxPath\) -Capture/);
+  assert.match(helper, /stops ALL running distros/);
+  assert.match(helper, /\$forwarded = @\(\$CliArgs \| Where-Object \{ \$null -ne \$_ \}\)/);
+});
+
+// Exercise the actual regex/replacement literals from PowerShell under JS's
+// compatible regex subset. These fixture checks do not execute PowerShell.
+test('Production quoting expressions match adversarial Windows argv fixtures', () => {
+  const expression = helper.match(/return '"' \+ \[regex\]::Replace\(\[regex\]::Replace\(\$Value, '([^']+)', '([^']+)'\), '([^']+)', '([^']+)'\)/);
+  assert.ok(expression);
+  const quote = value => '"' + value.replace(new RegExp(expression[1], 'g'), expression[2]).replace(new RegExp(expression[3], 'g'), expression[4]) + '"';
+  const fixtures = [
+    ['', '""'],
+    ['S:\\Drive space\\launch\\linux.sh', '"S:\\Drive space\\launch\\linux.sh"'],
+    ['C:\\project space\\', '"C:\\project space\\\\"'],
+    ['say "hello"', '"say \\"hello\\""'],
+    ['é &;$()', '"é &;$()"'],
+  ];
+  for (const [input, expected] of fixtures) assert.equal(quote(input), expected);
+});
+
+test('Production distro version expression matches localized rows and rejects unknown versions', () => {
+  const pattern = helper.match(/\('([^']+)' \+ \[regex\]::Escape\(\$name\) \+ '([^']*\(\[12\]\)[^']*)'\)/);
+  assert.ok(pattern);
+  // Distro name fixtures include regex metacharacters and spaces.
+  for (const [name, row, expected] of [
+    ['Ubuntu', '* Ubuntu    Running    1', '1'],
+    ['Ubuntu Custom', 'Ubuntu Custom    Arrêté    2', '2'],
+    ['Distro.test', '* Distro.test    Stopped    2', '2'],
+    ['Ubuntu', '* Ubuntu    Running    3', undefined],
+    ['Ubuntu', 'Ubuntu    Running    unknown', undefined],
+  ]) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.equal(new RegExp(pattern[1] + escaped + pattern[2]).exec(row)?.[1], expected);
+  }
+});
+
+for (const executable of ['pwsh', 'powershell.exe']) {
+  const available = spawnSync(executable, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' }).status === 0;
+  test(`${executable}: real process boundary and mocked WSL dispatch`, { skip: !available && `${executable} is not installed` }, () => {
+    const result = spawnSync(executable, ['-NoProfile', '-File', 'tests/drive-wsl.ps1'], {
+      encoding: 'utf8', timeout: 45000, env: { ...process.env, PORTABLE_AI_TEST_NODE: process.execPath },
+    });
+    assert.equal(result.status, 0, String(result.error ?? '') + result.stdout + result.stderr);
+  });
+}

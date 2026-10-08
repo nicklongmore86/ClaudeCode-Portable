@@ -9,7 +9,7 @@ $result = 0
 while ($true) {
     $selected = $Action
     if ($Action -eq 'menu') {
-        Write-Host "`n1 Claude Code`n2 Codex`n3 Dashboard`n4 Login setup`n5 Audit`n6 Exit`n7 WSL mode"
+        Write-Host "`n1 Claude Code`n2 Codex`n3 Dashboard`n4 Login setup`n5 Audit`n7 WSL mode`n6 Exit"
         $selected = Read-Host 'Choose'
     }
     try {
