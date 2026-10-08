@@ -192,12 +192,21 @@ launcher uses the default distro, or `PORTABLE_AI_WSL_DISTRO` when set in the
 current terminal (`$env:PORTABLE_AI_WSL_DISTRO='Ubuntu'` in PowerShell). With one
 distro it uses that distro; with several and no default it asks you to choose.
 Use `wsl.exe -l -v` to inspect existing distros. Missing WSL/distros fail with
-guidance; the launcher never installs WSL, changes its default, edits host
-configuration, or creates files on Windows or in the distro.
+guidance. The Windows bridge itself does not install WSL, change its default,
+edit host configuration, or create files on Windows or in the distro. Starting
+WSL and running the Linux launcher can leave host traces; see the WSL limits
+under **Audit and limits** below. WSL1 distros are refused without conversion.
 
 The Windows entrypoint runs the sibling `AI-SHARED/launch/linux.sh`, translating
 both its path and your current project directory through that distro's `wslpath`.
-Both locations must be accessible in WSL. Arguments and the direct action's exit
+Both locations must be accessible in WSL; the bridge checks that `linux.sh` exists
+inside the distro before launching it. If a newly attached drive is missing,
+attach it before starting WSL or ask the host owner to mount it with drvfs.
+With the host owner's agreement, `wsl --shutdown` followed by a retry can refresh
+drive visibility, but **shutdown stops all running distros and their work**.
+Helper calls close stdin, display a starting message, and time out after 60 seconds
+(plus bounded cleanup); errors include captured WSL diagnostics. The interactive
+session has no timeout. Arguments and the direct action's exit
 code pass through; prompts remain interactive. This entrypoint needs no AI-WIN
 binaries or supervisor DLL. Native Windows options still use AI-WIN as before.
 Real Windows validation of this entrypoint is still required.
@@ -210,9 +219,9 @@ When already inside WSL2 (e.g. Ubuntu on Windows), you can still execute the Lin
 
 The launcher automatically detects the WSL2 environment:
 - **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Windows executables (`.exe` / `.cmd` / `/mnt/*` shims) are strictly ignored.
-- **Drive-resident ext4 state**: To guarantee zero host footprint, runtime state, caches, temp files, and Codex SQLite databases are stored in a 4GB sparse ext4 image on the drive (`AI-SHARED/state/wsl-state.ext4`). The image is auto-created on first run and mounted via unprivileged `udisksctl` or loop mount.
+- **Drive-resident ext4 state**: Runtime state, caches, temp files, and Codex SQLite databases are stored in a 4GB sparse ext4 image on the drive (`AI-SHARED/state/wsl-state.ext4`). The image is auto-created on first run and mounted via unprivileged `udisksctl` or loop mount.
 - **Shared authoritative credentials**: `claude-oauth-token` and `codex-auth.json` on `AI-SHARED/credentials/` remain authoritative and synchronized across Windows, native Linux, macOS, and WSL2.
-- **Clean teardown**: On exit, the loop image is unmounted and any temporary mountpoint removed, leaving zero files on the WSL host.
+- **Clean teardown**: On exit, the loop image is unmounted and any temporary mountpoint removed; this does not erase OS or sudo traces.
 - **Dashboard**: The Node dashboard is scoped to native Windows (`launch/windows.cmd`); inside WSL2, use the CLI options (Claude Code / Codex / Login / Audit).
 
 Choose **Login setup → Claude subscription**. The official `claude setup-token`
@@ -276,6 +285,10 @@ drive output and are removed on success, failure or a handled signal. Optional
 - Linux `noexec` mounts block binaries. Try `udisksctl mount -b /dev/disk/by-label/AI-LINUX`.
   If already mounted noexec, ask the host owner to remount that volume with exec;
   the launcher never elevates or changes mount policy itself.
+- Starting WSL2 can create `swap.vhdx` in `%TEMP%`, write WSL logs, and grow the
+  distro VHDX. The current Linux WSL mode creates a temporary mountpoint inside
+  the distro and can use `sudo mount`, which can leave sudo/auth/journal records.
+  Drive-resident application state does not imply zero host traces.
 - Login browsers, OS services, shell history, security software and project tools
   may leave host traces. Full host access means intentional project writes occur.
 - An untrusted host can read all attached credentials. Protect the physical drive,
@@ -305,3 +318,29 @@ supervisor compilation. The npm wrapper skips this gate when pwsh is absent.
 On Windows, additionally smoke-test Job Object cleanup and both architectures.
 All automated partition tests use fake devices and `--dry-run`; tests download
 no release binaries and perform no real login or partition operation.
+
+### Windows WSL validation checklist (required before merge)
+
+Run on real Windows with **Windows PowerShell 5.1** (used by `windows.cmd`) and
+**pwsh 7.4+**. Run `powershell.exe -NoProfile -File tests/drive-wsl.ps1` and
+`pwsh -NoProfile -File tests/drive-wsl.ps1` with Node available, then check:
+
+- Default, `PORTABLE_AI_WSL_DISTRO` override, sole distro, and multiple distros
+  without a default; also a WSL1 default and WSL1 override (both must refuse).
+- Missing WSL/inbox install stub and WSL with no distros: no keypress can accept
+  an install offer; kernel-update/VM-platform failures show the WSL diagnostics.
+- A drive attached after the VM started; the bridge must report an unreachable
+  launcher with recovery guidance. Check 32-bit PowerShell's Sysnative fallback.
+- Paths with spaces, non-ASCII characters and `'&;$()`, deliberate empty
+  arguments, and a bare `windows.cmd wsl` (no extra empty argument).
+- `windows.cmd wsl codex exec "a \"q\" b"` and failing `wsl audit`: check the
+  arguments received and `%ERRORLEVEL%` (or `$LASTEXITCODE` in PowerShell).
+- Interactive login and Ctrl+C mid-session, then exit: does the menu return and
+  is the exit code kept? Also verify that session cleanup has finished.
+- Every native menu action with and without AI-WIN mounted. Native initialization
+  failures now return to the menu; direct actions still exit non-zero. Exit and
+  WSL selections must work without initializing AI-WIN.
+
+The pre-existing `powershell -File` argument-binding limits still apply to both
+native and WSL actions: `-c` may bind to `-CliArgs`, a literal `--` is swallowed,
+and cmd expands `%VAR%`. These are not repaired by the WSL bridge.

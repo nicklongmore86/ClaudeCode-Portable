@@ -107,6 +107,9 @@ otherwise the marked default. A sole distro is selected automatically; multiple
 distros without a default require a numbered choice. An invalid override or
 missing WSL/distro fails non-zero with preparation guidance. The host owner must
 already have prepared WSL2 and the Linux CLI/mount prerequisites described below.
+The selected distro's version is checked in the verbose list; WSL1 and unknown
+versions fail before starting Linux commands. Under 32-bit PowerShell, discovery
+falls back to `%WINDIR%/Sysnative/wsl.exe`.
 
 Paths come from the launcher's own directory and the current project directory,
 never assumed drive letters or `/mnt` paths. Each is translated with
@@ -114,9 +117,19 @@ never assumed drive letters or `/mnt` paths. Each is translated with
 `wsl.exe -d <distro> --cd <project-dir> --exec bash <linux.sh> <args...>` with
 inherited console handles. Explicit `--exec` bypasses the distro's default shell;
 arguments (including spaces/quotes) are passed as data. The direct action forwards
-the Linux exit status. Translation failure stops launch.
+the Linux exit status. Translation failure or a failed `test -f <linux.sh>`
+inside the distro stops launch with captured diagnostics and drive-visibility
+guidance. A suggested `wsl --shutdown` recovery requires the host owner's
+agreement because it stops all running distros and their work.
 
-The Windows bridge performs no installation, default changes, registry or
+Discovery/translation/reachability helpers redirect and immediately close stdin,
+so the inbox WSL stub cannot consume a keypress to accept an installation offer.
+They show a starting message and have a 60-second process timeout with bounded
+cleanup. Captured stdout/stderr are included in errors; UTF-16LE WSL diagnostics
+and UTF-8 Linux output are decoded separately. The interactive session inherits
+the console and has no timeout.
+
+The Windows bridge itself performs no installation, default changes, registry or
 `.wslconfig` edits, or file writes on Windows/in the distro. Existing Linux
 state/credential handling remains unchanged. OS-managed WSL activity remains
 subject to the host-trace limits below. Real Windows testing of distro selection,
@@ -128,7 +141,7 @@ When `launch/linux.sh` is executed inside WSL2 (auto-detected via `/proc/version
 2. **Drive-resident state**: Rather than writing state to the host WSL rootfs, the launcher maintains all runtime state, caches, temp files, and Codex SQLite databases inside a drive-resident ext4 image (`AI-SHARED/state/wsl-state.ext4`).
 3. **Mounting**: Automatically mounted via unprivileged `udisksctl` or loop mount (`mount -o loop`) during the session, and cleanly unmounted on exit.
 4. **Authoritative credentials**: Authoritative credentials (`claude-oauth-token` and `codex-auth.json`) and cross-platform session locks remain on `AI-SHARED/credentials/`, shared across Windows, macOS, native Linux, and WSL2.
-5. **Zero host footprint**: When the session ends and the image is unmounted, zero files remain on the host WSL system.
+5. **Teardown limits**: The session unmounts the drive image and removes its temporary mountpoint inside the distro. OS and sudo traces can remain; see the limits below.
 
 ## First-time login (on any machine)
 - Claude: launcher option runs `claude setup-token`, user pastes the printed
@@ -160,4 +173,11 @@ temp) before and after a session; print a diff report. Pure sh / PowerShell.
 - Gatekeeper / SmartScreen prompts on first run; managed hosts may block.
 - Linux `noexec` automounts block execution (document `udisksctl` / remount).
 - Browser used for login and the OS itself may leave traces.
+- Booting the WSL2 VM can create `swap.vhdx` in `%TEMP%`, write WSL logs, and grow
+  the distro VHDX. The current Linux WSL mode uses a temporary mountpoint inside
+  the distro and can invoke `sudo mount`, leaving sudo/auth/journal records.
+  These effects are outside the Windows bridge's own no-file-write scope.
+- Real Windows validation remains required under Windows PowerShell 5.1 and
+  pwsh 7.4+, including Ctrl+C/menu return and exit status. Follow the full
+  [Windows WSL validation checklist](../START-HERE.md#windows-wsl-validation-checklist-required-before-merge).
 - An untrusted host can read credentials while the drive is attached.
