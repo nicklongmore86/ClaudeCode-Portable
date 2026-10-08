@@ -41,23 +41,17 @@ AI-SHARED/
     macos.command      # double-clickable on macOS
     linux.sh
     lib/               # shared launcher helpers (pure sh / ps1; no runtime deps)
-      drive.sh
-      session.sh
-      omnigent-host.sh
   credentials/
     claude-oauth-token       # from `claude setup-token`; mode 600 where supported
     codex-auth.json          # SINGLE authoritative Codex auth cache
-    omnigent-server-url      # stored remote server URL; mode 600
-    omnigent-hosts.json      # per-machine host identity map; mode 600
   checksums/                 # SHA256SUMS for every binary on every partition
   tools/
     audit/                   # host-write audit tool (see below)
-    omnigent-host            # portable Omnigent host agent relative wrapper
   logs/
 
 AI-WIN/  AI-MAC/  AI-LINUX/   (same shape on each)
-  bin/<os>-<arch>/           # claude, codex package, python standalone runtime
-  tools/                     # e.g. tools/portable-git/, tools/omnigent-runtime/
+  bin/<os>-<arch>/           # claude, codex package (bin/, codex-path/rg, codex-resources/...), goose etc.
+  tools/                     # e.g. AI-WIN/tools/portable-git/
   state/
     claude/                  # CLAUDE_CONFIG_DIR
     codex/                   # CODEX_HOME (must NOT be under tmp/)
@@ -96,7 +90,7 @@ AI-WIN/  AI-MAC/  AI-LINUX/   (same shape on each)
    Use a lock file on `AI-SHARED` to prevent two concurrent sessions.
 6. Preserve the host working directory (the user's project), and pass through
    extra CLI args.
-7. Offer a menu: Claude Code / Codex / Dashboard / Omnigent Host /
+7. Offer a menu: Claude Code / Codex / (build-specific: dashboard or Goose) /
    login setup / audit / exit.
 8. On exit: ensure no child processes remain so the drive can be ejected.
 
@@ -134,18 +128,8 @@ When `launch/linux.sh` is executed inside WSL2 (auto-detected via `/proc/version
 `~/.local`, `%APPDATA%`, `%LOCALAPPDATA%`, `%TEMP%`, `~/Library/...`, system
 temp) before and after a session; print a diff report. Pure sh / PowerShell.
 
-## Omnigent Host Add-on (Linux & macOS)
-Self-contained, relocatable Omnigent Host agent (`tools/omnigent-host`) connecting back to a remote Omnigent server:
-1. **Standalone Python Runtime**: Uses Astral's standalone Python 3.12 (`bin/<os>-<arch>/python`) with bundled terminfo (`share/terminfo`).
-2. **Binary-Only Runtime Dependencies**: Pre-installed binary wheels in `tools/omnigent-runtime` with zero target compilation.
-3. **Interactive Server URL Prompt**: Prompts for server URL on first launch if not configured; saves securely to `AI-SHARED/credentials/omnigent-server-url`.
-4. **Per-Machine Host Identity**: Mints and tracks distinct UUIDs per physical machine in `AI-SHARED/credentials/omnigent-hosts.json`, preventing cross-machine session resumption.
-5. **Zero Host Footprint**: All runtime state, logs, and temp files are confined to drive partitions (`state/`, `tmp/`).
-6. **Launcher Integration & Supervision**: Offered via launcher menu (`launch/linux.sh`, `launch/macos.command`), dedicated CLI action (`omnigent`, `omnigent-host`), and login setup (`Login setup → Omnigent server URL`); managed under the session process supervisor with bounded process-group teardown, credential synchronization, and atomic drive-resident locking.
-
 ## Known, documented limits
 - Gatekeeper / SmartScreen prompts on first run; managed hosts may block.
 - Linux `noexec` automounts block execution (document `udisksctl` / remount).
 - Browser used for login and the OS itself may leave traces.
 - An untrusted host can read credentials while the drive is attached.
-

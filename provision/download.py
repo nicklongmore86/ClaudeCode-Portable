@@ -97,24 +97,6 @@ def find_npm_cli(node, npm):
     raise ValueError('Cannot locate prep-machine npm-cli.js')
 
 
-def find_pip_cli(python, pip=None):
-    if pip and Path(pip).resolve().is_file():
-        return Path(pip).resolve()
-    python_path = Path(python).resolve()
-    python_dir = python_path.parent
-    candidates = ([Path(pip).resolve()] if pip else []) + [
-        python_dir / 'pip',
-        python_dir / 'pip3',
-        python_dir / 'pip3.12',
-        Path('/usr/bin/pip3'),
-        Path('/usr/local/bin/pip3'),
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise ValueError('Cannot locate prep-machine pip CLI')
-
-
 def prepare(args):
     shared, native = args.shared.resolve(), args.native.resolve()
     if shared == native or shared in native.parents or native in shared.parents:
@@ -152,10 +134,7 @@ def prepare(args):
         raise ValueError(f'{bindir} already exists; close all sessions and move it aside before reprovisioning')
     stage = Path(tempfile.mkdtemp(prefix='provision-', dir=native / 'tmp'))
     try:
-        tools_to_fetch = ['claude', 'codex', 'node']
-        if 'python' in assets:
-            tools_to_fetch.append('python')
-        for tool in tools_to_fetch:
+        for tool in ['claude', 'codex', 'node']:
             asset = assets[tool]
             archive = download(asset['url'], cache / Path(asset['url']).name, asset['sha256'])
             if tool == 'codex' and osname == 'linux':
@@ -172,14 +151,10 @@ def prepare(args):
                     raise ValueError('Signed Node checksum differs from pin')
             destination = stage if tool == 'claude' else stage / tool
             extract(archive, destination)
-            executable = ('claude.exe' if osname == 'win32' else 'claude') if tool == 'claude' else ('bin/codex.exe' if osname == 'win32' else 'bin/codex') if tool == 'codex' else ('bin/python3' if tool == 'python' else ('node.exe' if osname == 'win32' else 'bin/node'))
+            executable = ('claude.exe' if osname == 'win32' else 'claude') if tool == 'claude' else ('bin/codex.exe' if osname == 'win32' else 'bin/codex') if tool == 'codex' else ('node.exe' if osname == 'win32' else 'bin/node')
             normalize(destination, executable)
             if osname != 'win32':
                 (destination / executable).chmod(0o755)
-            if tool == 'python':
-                terminfo_dir = destination / 'share/terminfo'
-                if not terminfo_dir.is_dir():
-                    raise ValueError('Python standalone archive missing share/terminfo')
         stage.rename(bindir)
     finally:
         if stage.exists():
@@ -217,28 +192,6 @@ def prepare(args):
     subprocess.run([node, str(npm_cli), 'install', '--prefix', str(deps), '--ignore-scripts', '--omit=optional',
                     '--no-audit', '--no-fund', '--cache', str(native / 'state/npm-cache')], check=True,
                    env={**os.environ, 'npm_config_update_notifier': 'false'})
-    if 'python' in assets:
-        omnigent_runtime = native / 'tools/omnigent-runtime'
-        omnigent_runtime.mkdir(parents=True, exist_ok=True)
-        reqs_file = ROOT / 'tools/omnigent-runtime-requirements.txt'
-        if reqs_file.is_file():
-            shutil.copy2(reqs_file, omnigent_runtime / 'requirements.txt')
-            py = shutil.which('python3') or shutil.which('python')
-            if not py:
-                raise ValueError('Prep-machine Python 3.12+ is required for Omnigent runtime dependencies')
-            pip_override = getattr(args, 'pip', None)
-            pip_cli = find_pip_cli(py, pip_override)
-            subprocess.run([py, str(pip_cli), 'install', '--target', str(omnigent_runtime),
-                            '--only-binary', ':all:', '--no-warn-script-location',
-                            '--cache-dir', str(native / 'state/pip-cache'),
-                            '-r', str(omnigent_runtime / 'requirements.txt')], check=True)
-        if (ROOT / 'tools/omnigent-host').is_file():
-            (shared / 'tools').mkdir(exist_ok=True)
-            shutil.copy2(ROOT / 'tools/omnigent-host', shared / 'tools/omnigent-host')
-            (shared / 'tools/omnigent-host').chmod(0o755)
-            (native / 'tools').mkdir(exist_ok=True)
-            shutil.copy2(ROOT / 'tools/omnigent-host', native / 'tools/omnigent-host')
-            (native / 'tools/omnigent-host').chmod(0o755)
     record_files(native, shared, target)
     if osname == 'win32':
         print('On a Windows prep machine run provision/windows-supervisor.ps1 -Native <AI-WIN root>, then refresh checksums with --checksums-only.')
@@ -253,7 +206,6 @@ def main():
     parser.add_argument('--native', type=Path, required=True)
     parser.add_argument('--target', choices=MANIFEST['targets'], required=True)
     parser.add_argument('--node-keyring', type=Path)
-    parser.add_argument('--pip', type=Path)
     parser.add_argument('--checksums-only', action='store_true')
     args = parser.parse_args()
     if args.checksums_only:

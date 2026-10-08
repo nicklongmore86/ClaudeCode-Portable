@@ -2,7 +2,6 @@
   "claude_version": "2.1.247",
   "codex_version": "rust-v0.161.0",
   "node_version": "24.21.0",
-  "python_version": "3.12.15+20261003",
   "claude_sums": "https://github.com/anthropics/claude-code/releases/download/v2.1.247/SHASUMS256.txt",
   "claude_signer": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
   "targets": {
@@ -46,10 +45,6 @@
       "node": {
         "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz",
         "sha256": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097"
-      },
-      "python": {
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-apple-darwin-install_only.tar.gz",
-        "sha256": "a8fd7a91852f19b6d959793ef41fad048631ccb2a334a9ecdf573255298f7978"
       }
     },
     "darwin-arm64": {
@@ -64,10 +59,6 @@
       "node": {
         "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
         "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057"
-      },
-      "python": {
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-apple-darwin-install_only.tar.gz",
-        "sha256": "316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213"
       }
     },
     "linux-x64": {
@@ -82,10 +73,6 @@
       "node": {
         "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz",
         "sha256": "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff"
-      },
-      "python": {
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
-        "sha256": "f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5"
       }
     },
     "linux-arm64": {
@@ -100,10 +87,6 @@
       "node": {
         "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.gz",
         "sha256": "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5"
-      },
-      "python": {
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-unknown-linux-gnu-install_only.tar.gz",
-        "sha256": "95c01982c9fcb9d95b0acfdb5eb8a6e0099dd11edf062314a474228d93f2b765"
       }
     }
   },

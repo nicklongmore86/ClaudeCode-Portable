@@ -89,73 +89,16 @@ class ProvisionTests(unittest.TestCase):
             drive.extract(archive, self.base / 'out')
         self.assertFalse((self.base / 'escape').exists())
 
-    def test_unix_targets_include_pinned_python_assets(self):
-        self.assertEqual(drive.MANIFEST['python_version'], '3.12.15+20261003')
-        unix_targets = ['darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64']
-        for target in unix_targets:
-            with self.subTest(target=target):
-                assets = drive.MANIFEST['targets'][target]
-                self.assertIn('python', assets)
-                python_asset = assets['python']
-                self.assertRegex(python_asset['sha256'], r'^[0-9a-f]{64}$')
-                self.assertTrue(python_asset['url'].startswith('https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.'))
-                self.assertIn('install_only', python_asset['url'])
-
-    def test_pip_cli_lookup_fallbacks_and_failure(self):
-        python = '/prep/python/bin/python3'
-        pip = '/prep/pip-wrapper'
-        candidates = [
-            Path('/prep/python/bin/pip'),
-            Path('/prep/python/bin/pip3'),
-            Path('/prep/python/bin/pip3.12'),
-            Path('/usr/bin/pip3'),
-            Path('/usr/local/bin/pip3'),
-        ]
-        for expected in candidates:
-            with self.subTest(expected=expected), patch.object(Path, 'is_file', lambda p: p.resolve() == expected):
-                self.assertEqual(drive.find_pip_cli(python).resolve(), expected)
-        with patch.object(Path, 'is_file', return_value=False):
-            with self.assertRaisesRegex(ValueError, 'Cannot locate prep-machine pip CLI'):
-                drive.find_pip_cli(python)
-        direct = self.base / 'pip'
-        direct.write_text('#!/bin/sh')
-        self.assertEqual(drive.find_pip_cli(python, str(direct)), direct)
-
-    def test_safe_extraction_normalizes_python_and_preserves_terminfo(self):
-        archive = self.base / 'cpython.tar.gz'
-        with tarfile.open(archive, 'w:gz') as tar:
-            for name in ['python/bin/python3', 'python/share/terminfo/t/tmux-256color', 'python/share/terminfo/x/xterm-256color']:
-                entry = tarfile.TarInfo(name); entry.size = 4; entry.mode = 0o755 if 'bin' in name else 0o644
-                tar.addfile(entry, io.BytesIO(b'term'))
-        dest = self.base / 'python'
-        drive.extract(archive, dest)
-        drive.normalize(dest, 'bin/python3')
-        self.assertEqual((dest / 'bin/python3').read_bytes(), b'term')
-        self.assertEqual((dest / 'bin/python3').stat().st_mode & 0o777, 0o755)
-        self.assertTrue((dest / 'share/terminfo/t/tmux-256color').is_file())
-        self.assertTrue((dest / 'share/terminfo/x/xterm-256color').is_file())
-
     def test_checksums_cover_companions_and_tools(self):
         native = self.base / 'native'; shared = self.base / 'shared'
         (shared / 'checksums').mkdir(parents=True)
-        for name in [
-            'bin/linux-x64/claude',
-            'bin/linux-x64/codex/bin/codex',
-            'bin/linux-x64/codex/codex-path/rg',
-            'bin/linux-x64/python/bin/python3',
-            'tools/omnigent-host',
-            'tools/omnigent-runtime/requirements.txt',
-            'tools/DriveChild.dll'
-        ]:
+        for name in ['bin/linux-x64/claude', 'bin/linux-x64/codex/bin/codex', 'bin/linux-x64/codex/codex-path/rg', 'tools/DriveChild.dll']:
             path = native / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'fixture')
         drive.record_files(native, shared, 'linux-x64')
         rows = (shared / 'checksums/linux-x64-SHA256SUMS').read_text().splitlines()
-        self.assertEqual(len(rows), 7)
-        self.assertTrue(any('python/bin/python3' in row for row in rows))
-        self.assertTrue(any('tools/omnigent-host' in row for row in rows))
-        self.assertTrue(any('tools/omnigent-runtime/requirements.txt' in row for row in rows))
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(any('codex-path/rg' in row for row in rows))
 
 
 if __name__ == '__main__':
     unittest.main()
-
