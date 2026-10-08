@@ -90,6 +90,30 @@ function Invoke-WslProcess($Executable, [string[]]$Arguments, [switch]$Capture, 
     }
     return 37
 }
+# Mock registry reads, never use or modify the test host's registrations.
+$script:registrationMode = 'registered'
+$script:registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+function Test-Path($LiteralPath, $PathType) {
+    if ($LiteralPath -eq $script:registryPath) { return $script:registrationMode -ne 'missing' }
+    return Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType
+}
+function Get-ChildItem($LiteralPath) {
+    Assert-Equal $LiteralPath $script:registryPath
+    if ($script:registrationMode -eq 'denied') { throw 'registry access denied' }
+    if ($script:registrationMode -ne 'empty') { [PSCustomObject]@{ PSPath='mock-registration' } }
+}
+function Get-ItemProperty($LiteralPath) {
+    Assert-Equal $LiteralPath 'mock-registration'
+    if ($script:registrationMode -eq 'nameless') { return [PSCustomObject]@{} }
+    return [PSCustomObject]@{ DistributionName='Debian' }
+}
+foreach ($mode in @('missing', 'empty', 'nameless', 'denied')) {
+    $script:registrationMode = $mode
+    $script:calls.Clear()
+    Assert-Throws { Invoke-DriveWsl (Join-Path $repo 'launch') $null } 'No wsl.exe process was started'
+    Assert-Equal $script:calls.Count 0
+}
+$script:registrationMode = 'registered'
 $before = $env:PORTABLE_AI_WSL_DISTRO
 $beforeWindir = $env:windir
 try {

@@ -204,7 +204,13 @@ inside the distro before launching it. If a newly attached drive is missing,
 attach it before starting WSL or ask the host owner to mount it with drvfs.
 With the host owner's agreement, `wsl --shutdown` followed by a retry can refresh
 drive visibility, but **shutdown stops all running distros and their work**.
-Helper calls close stdin, display a starting message, and time out after 60 seconds
+Before starting any `wsl.exe` process, the bridge reads the current user's distro
+registrations under `HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss`.
+No registrations, or an unreadable registry, means guidance and an error without
+invoking WSL. This check never writes the registry. Subsequent helper calls use
+`CreateNoWindow` and closed redirected stdin; this is designed to prevent console
+or stdin keypresses from accepting an install offer. This behavior still requires
+validation on a host without WSL. Helpers display a starting message and time out after 60 seconds
 (plus bounded cleanup); errors include captured WSL diagnostics. The interactive
 session has no timeout. Arguments and the direct action's exit
 code pass through; prompts remain interactive. This entrypoint needs no AI-WIN
@@ -327,8 +333,11 @@ Run on real Windows with **Windows PowerShell 5.1** (used by `windows.cmd`) and
 
 - Default, `PORTABLE_AI_WSL_DISTRO` override, sole distro, and multiple distros
   without a default; also a WSL1 default and WSL1 override (both must refuse).
-- Missing WSL/inbox install stub and WSL with no distros: no keypress can accept
-  an install offer; kernel-update/VM-platform failures show the WSL diagnostics.
+- A host without WSL (including the inbox install stub), and WSL with no distros:
+  verify no `wsl.exe` process is started when registrations are absent. Check
+  unreadable registrations and stale registrations too; helper calls should have
+  no console and stdin EOF, with no accepted install offer. Kernel-update and
+  VM-platform failures should show the WSL diagnostics.
 - A drive attached after the VM started; the bridge must report an unreachable
   launcher with recovery guidance. Check 32-bit PowerShell's Sysnative fallback.
 - Paths with spaces, non-ASCII characters and `'&;$()`, deliberate empty

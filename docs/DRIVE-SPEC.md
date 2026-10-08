@@ -122,9 +122,16 @@ inside the distro stops launch with captured diagnostics and drive-visibility
 guidance. A suggested `wsl --shutdown` recovery requires the host owner's
 agreement because it stops all running distros and their work.
 
-Discovery/translation/reachability helpers redirect and immediately close stdin,
-so the inbox WSL stub cannot consume a keypress to accept an installation offer.
-They show a starting message and have a 60-second process timeout with bounded
+Before invoking `wsl.exe`, the bridge reads distro registrations under
+`HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss`. A missing/empty
+registration set or a registry read failure stops launch with guidance and no
+`wsl.exe` invocation. Registry access is read only. Registration presence does
+not prove that WSL is functional; subsequent helper diagnostics remain necessary.
+Discovery/translation/reachability helpers use `CreateNoWindow`, redirect stdin,
+and immediately close it. These measures are designed to prevent installation
+offers from accepting keyboard input; behavior on a host without WSL still needs
+real Windows validation, including stale-registration scenarios.
+Helpers show a starting message and have a 60-second process timeout with bounded
 cleanup. Captured stdout/stderr are included in errors; UTF-16LE WSL diagnostics
 and UTF-8 Linux output are decoded separately. The interactive session inherits
 the console and has no timeout.

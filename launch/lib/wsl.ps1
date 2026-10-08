@@ -23,6 +23,7 @@ function Invoke-WslProcess($Executable, [string[]]$Arguments, [switch]$Capture, 
     $info.Arguments = (($Arguments | ForEach-Object { ConvertTo-WslArgument $_ }) -join ' ')
     if ($Capture) {
         $info.RedirectStandardInput = $true
+        $info.CreateNoWindow = $true
         $info.RedirectStandardOutput = $true
         $info.RedirectStandardError = $true
         # Remove the optional UTF-8 override only from this child's environment.
@@ -35,13 +36,15 @@ function Invoke-WslProcess($Executable, [string[]]$Arguments, [switch]$Capture, 
     try {
         [void]$process.Start()
         if ($Capture) {
-            # The inbox WSL stub must never consume a console key to install WSL.
+            # No console for helpers; stdin is also closed to supply immediate EOF.
             $process.StandardInput.Close()
             $stdout = $process.StandardOutput.BaseStream.CopyToAsync($outBuffer)
             $stderr = $process.StandardError.BaseStream.CopyToAsync($errBuffer)
             $timedOut = !$process.WaitForExit($TimeoutMilliseconds)
             if ($timedOut) {
-                $process.Kill()
+                try { $process.Kill() } catch [InvalidOperationException] {
+                    # The helper exited after the timeout check; retain diagnostics.
+                }
                 [void]$process.WaitForExit(5000)
             }
             # Bound draining too: a descendant might retain a pipe after exit.
@@ -57,6 +60,24 @@ function Invoke-WslProcess($Executable, [string[]]$Arguments, [switch]$Capture, 
         $process.WaitForExit()
         return $process.ExitCode
     } finally { $process.Dispose(); $outBuffer.Dispose(); $errBuffer.Dispose() }
+}
+
+function Assert-WslRegistered {
+    # Read only: do not launch the inbox stub on an unprepared host.
+    $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+    $registered = @()
+    try {
+        if (Test-Path -LiteralPath $registryPath -ErrorAction Stop) {
+            $registered = @(Get-ChildItem -LiteralPath $registryPath -ErrorAction Stop | ForEach-Object {
+                Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop
+            } | Where-Object { ![string]::IsNullOrWhiteSpace($_.DistributionName) })
+        }
+    } catch {
+        throw "Cannot read WSL distro registrations for this Windows user. Ask the host owner to check WSL setup. No wsl.exe process was started. $($_.Exception.Message)"
+    }
+    if (!$registered.Count) {
+        throw 'No WSL distro is registered for this Windows user. Ask the host owner to prepare WSL2 and register a distro first. No wsl.exe process was started; the launcher installs nothing.'
+    }
 }
 
 function Find-WslExecutable {
@@ -124,6 +145,7 @@ function ConvertTo-WslPath($Executable, $Distro, [string]$WindowsPath) {
 }
 
 function Invoke-DriveWsl($LauncherDirectory, [string[]]$CliArgs) {
+    Assert-WslRegistered
     $executable = Find-WslExecutable
     Write-Host 'Starting WSL... Checking installed distros (up to 60 seconds per helper call).'
     $listing = Invoke-WslProcess $executable @('-l', '-q') -Capture -List

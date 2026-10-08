@@ -73,6 +73,24 @@ test('Captured helpers close stdin, bound waits and surface diagnostics without 
   assert.match(helper, /Write-Host 'Starting WSL/);
 });
 
+test('Registration preflight is read-only and runs before any WSL invocation', () => {
+  assert.match(helper, /HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss/);
+  const registration = helper.slice(helper.indexOf('function Assert-WslRegistered'), helper.indexOf('function Find-WslExecutable'));
+  assert.match(registration, /Get-ChildItem -LiteralPath \$registryPath -ErrorAction Stop/);
+  assert.match(registration, /Get-ItemProperty -LiteralPath \$_.PSPath -ErrorAction Stop/);
+  assert.match(registration, /IsNullOrWhiteSpace\(\$_.DistributionName\)/);
+  assert.match(registration, /if \(!\$registered.Count\)/);
+  assert.match(registration, /catch \{\s*throw/);
+  assert.match(helper, /function Invoke-DriveWsl[^\n]*\{\s*Assert-WslRegistered\s*\$executable = Find-WslExecutable/);
+});
+
+test('Helpers have no console and timeout exit races preserve diagnostic draining', () => {
+  assert.match(helper, /if \(\$Capture\) \{\s*\$info.RedirectStandardInput = \$true\s*\$info.CreateNoWindow = \$true/);
+  assert.equal(helper.match(/CreateNoWindow/g)?.length, 1);
+  assert.match(helper, /try \{ \$process.Kill\(\) \} catch \[InvalidOperationException\] \{\s*#[^\n]*\s*\}/);
+  assert.ok(helper.indexOf('catch [InvalidOperationException]') < helper.indexOf('Task]::WaitAll'));
+});
+
 test('Preflight rejects WSL1, supports Sysnative, checks reachability and filters only null arguments', () => {
   assert.match(helper, /Assert-Wsl2Distro \$names \$verbose.Output \$distro/);
   assert.match(helper, /\$Matches\[1\] -ne '2'/);
