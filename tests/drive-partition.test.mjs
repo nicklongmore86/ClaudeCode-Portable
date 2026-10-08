@@ -48,3 +48,28 @@ for (const key of ['model','serial']) {
     });
   }
 }
+
+
+test('dry-run prints exact native GPT GUIDs and sets only bit 63 on partitions 3 and 4',t=>{
+  const r=fixture(t)(['--device','/dev/mockdrive','--dry-run']);
+  assert.equal(r.status,0,r.stderr);
+  const commands=r.stdout.split('\n').filter(line=>line.startsWith('sgdisk '));
+  assert.deepEqual(commands,[
+    'sgdisk --zap-all /dev/mockdrive',
+    'sgdisk -n 1:1MiB:+8GiB -t 1:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 -c 1:AI-SHARED '+
+    '-n 2:0:+39GiB -t 2:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 -c 2:AI-WIN '+
+    '-n 3:0:+39GiB -t 3:7C3457EF-0000-11AA-AA11-00306543ECAC -c 3:AI-MAC '+
+    '-n 4:0:0 -t 4:0FC63DAF-8483-4772-8E79-3D69D8477DE4 -c 4:AI-LINUX '+
+    '--attributes=3:set:63 --attributes=4:set:63 /dev/mockdrive'
+  ]);
+  const args=commands[1].split(' ');
+  const types=args.flatMap((arg,index)=>arg==='-t'?[args[index+1]]:[]);
+  assert.deepEqual(types,[
+    '1:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7',
+    '2:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7',
+    '3:7C3457EF-0000-11AA-AA11-00306543ECAC',
+    '4:0FC63DAF-8483-4772-8E79-3D69D8477DE4'
+  ]);
+  assert.deepEqual(args.filter(arg=>arg.startsWith('--attributes=')),['--attributes=3:set:63','--attributes=4:set:63']);
+  assert.doesNotMatch(r.stderr,/DESTRUCTIVE-COMMAND/);
+});

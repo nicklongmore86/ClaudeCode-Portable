@@ -48,12 +48,15 @@ def plan(device, rows, root_source):
     rest = (size // gib - 9) // 3
     suffix = 'p' if device[-1].isdigit() else ''
     part = lambda n: f'{device}{suffix}{n}'
+    # Explicit native types prevent treating APFS/ext4 as Windows basic data.
+    # Set only bit 63 (no default drive letter); never hidden/read-only bits.
     commands = [
         ['sgdisk', '--zap-all', device],
-        ['sgdisk', '-n', '1:1MiB:+8GiB', '-t', '1:0700', '-c', '1:AI-SHARED',
-         '-n', f'2:0:+{rest}GiB', '-t', '2:0700', '-c', '2:AI-WIN',
-         '-n', f'3:0:+{rest}GiB', '-t', '3:af0a', '-c', '3:AI-MAC',
-         '-n', '4:0:0', '-t', '4:8300', '-c', '4:AI-LINUX', device],
+        ['sgdisk', '-n', '1:1MiB:+8GiB', '-t', '1:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7', '-c', '1:AI-SHARED',
+         '-n', f'2:0:+{rest}GiB', '-t', '2:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7', '-c', '2:AI-WIN',
+         '-n', f'3:0:+{rest}GiB', '-t', '3:7C3457EF-0000-11AA-AA11-00306543ECAC', '-c', '3:AI-MAC',
+         '-n', '4:0:0', '-t', '4:0FC63DAF-8483-4772-8E79-3D69D8477DE4', '-c', '4:AI-LINUX',
+         '--attributes=3:set:63', '--attributes=4:set:63', device],
         ['partprobe', device], ['udevadm', 'settle'],
         ['mkfs.exfat', '-n', 'AI-SHARED', part(1)],
         ['mkfs.ntfs', '-Q', '-L', 'AI-WIN', part(2)],

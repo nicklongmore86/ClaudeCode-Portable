@@ -1,5 +1,11 @@
 # Portable AI drive
 
+> **Protect the drive: if Windows offers to format any partition, click Cancel.**
+> **If macOS says the disk is “not readable”, click Ignore.** Do not initialize,
+> erase or format it through that prompt; doing so can destroy AI-MAC or AI-LINUX.
+> A filesystem unsupported by the current host is not necessarily damaged.
+
+
 This fork of [techjarves/ClaudeCode-Portable](https://github.com/techjarves/ClaudeCode-Portable)
 uses official, unmodified Claude Code and OpenAI Codex releases. The upstream
 MIT license and attribution are retained in LICENSE. The acceptance contract
@@ -15,6 +21,25 @@ Back up the device. Use a GPT drive with these labels, in this order:
 | AI-WIN | NTFS | A third of the remainder | Windows x64/arm64 binaries and state |
 | AI-MAC | APFS | A third of the remainder | macOS arm64/x64 binaries and state |
 | AI-LINUX | ext4 | The remaining space | Linux x64/arm64 binaries and state |
+
+The helper assigns explicit GPT type GUIDs:
+
+| Partition | GPT type GUID | Attribute bits set by helper |
+| --- | --- | --- |
+| 1 AI-SHARED | `EBD0A0A2-B9E5-4433-87C0-68B6B72699C7` (Microsoft basic data) | None |
+| 2 AI-WIN | `EBD0A0A2-B9E5-4433-87C0-68B6B72699C7` (Microsoft basic data) | None |
+| 3 AI-MAC | `7C3457EF-0000-11AA-AA11-00306543ECAC` (Apple APFS) | 63 |
+| 4 AI-LINUX | `0FC63DAF-8483-4772-8E79-3D69D8477DE4` (Linux filesystem data) | 63 |
+
+Bit 63 is the no-default-drive-letter flag (`0x8000000000000000`). APFS/ext4
+are never marked Microsoft basic data. AI-SHARED and AI-WIN remain eligible for
+normal Windows drive letters. No hidden or read-only bits are set.
+[Microsoft documents](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-partition_information_gpt)
+the basic-data type and no-drive-letter behavior for newly seen/moved disks;
+this is not a cross-platform promise to suppress all dialogs, nor a way to
+remove previously remembered drive-letter assignments. Correct type GUIDs are
+the primary distinction for foreign filesystems. Continue to Cancel/Ignore
+unexpected prompts; bit 63 is not a macOS prompt-suppression mechanism.
 
 The Linux helper needs Python 3.12+, util-linux, sgdisk, exfatprogs, ntfs-3g,
 parted and e2fsprogs. Inspect devices yourself with `lsblk -o PATH,MODEL,SERIAL,SIZE,MOUNTPOINTS`.
@@ -36,6 +61,41 @@ diskutil eraseVolume APFS AI-MAC /dev/diskNs3
 Replace `diskNs3` only after matching the physical device and partition. Mount
 the volumes on a prep machine that can write their native filesystem; do not
 attempt to write APFS from Linux. Normal launch requires no admin rights.
+
+**After the Mac APFS step, verify the partition map again before using Windows.**
+The [Apple-authored diskutil manual (Xcode man-page mirror)](https://keith.github.io/xcode-man-pages/diskutil.8.html)
+says `eraseVolume` keeps an existing partition while formatting it, and that
+`format` controls its partition type. It does **not** promise to preserve GPT
+attribute bit 63. Whether a particular macOS version resets that bit has not
+been verified here; do not assume preservation or claim a guaranteed reset.
+
+Return to the Linux prep machine, match the physical disk by model/serial,
+unmount its volumes, and inspect `sgdisk --print /dev/sdX` and the four entries:
+
+```sh
+sgdisk --info=1 --info=2 --info=3 --info=4 /dev/sdX
+```
+
+Only if the same four-partition layout is intact (3 is the APFS physical store,
+4 is ext4), explicitly as root reapply the types and flag without formatting:
+
+```sh
+sgdisk --typecode=3:7C3457EF-0000-11AA-AA11-00306543ECAC \
+  --typecode=4:0FC63DAF-8483-4772-8E79-3D69D8477DE4 \
+  --attributes=3:set:63 --attributes=4:set:63 /dev/sdX
+sgdisk --info=1 --info=2 --info=3 --info=4 /dev/sdX
+```
+
+Substitute the verified whole disk, not a partition or APFS synthesized device.
+Stop if partition numbering/layout changed. Expect the GUIDs above, bit 63 set
+on 3/4 (normally flags `8000000000000000`) and unset on 1/2 (normally zero).
+Investigate unexpected hidden/read-only or other flags; do not blindly clear
+them. These metadata commands leave filesystem contents intact when applied to
+the correct entries. **Do not rerun the partitioning helper after formatting:
+it erases the drive.** The [sgdisk author's manual](https://www.rodsbooks.com/gdisk/sgdisk.html)
+confirms full GUIDs for `--typecode`, per-bit `--attributes=N:set:63`, and
+`--info` inspection. Check again after later repartitioning/formatting tools.
+Physical Mac-to-Linux-to-Windows round trips remain a manual verification item.
 
 From this repository, provision each OS/architecture on suitable prep hosts:
 
@@ -86,6 +146,21 @@ on the prep machine (`chown -R TARGET_UID:TARGET_GID /mount/AI-LINUX/state /moun
 The launcher reports a write/ownership failure instead of silently using host
 storage. Avoid world-writable credential directories. exFAT cannot enforce mode
 600; shared credentials are readable to anyone who can access the volume.
+
+## Hardware notes
+
+A SATA-to-USB 3.0 adapter/enclosure has a **5 Gbps USB link**, not guaranteed
+5 Gbps file throughput; the drive, host port and cable may be slower.
+[USB-IF documents the USB 3.0 rate](https://usb.org/document-library/inter-chip-supplement-usb-revision-30-specification-revision-102).
+Prefer UASP plus explicitly TRIM-capable bridge chipsets/firmware for an SSD;
+UASP alone does not prove TRIM pass-through. Confirm support for your enclosure
+and host OS, as [adapter vendors note it is product/OS dependent](https://www.startech.com/en-ca/hdd/s2510bpu33).
+Use a protective enclosure for a bare 2.5-inch SATA drive. Check whether it is
+actually an SSD or HDD using Windows **Defragment and Optimize Drives** (Media
+type), or the model/media information in
+[CrystalDiskInfo](https://crystalmark.info/en/software/CrystalDiskInfo/).
+Some USB bridges limit drive identification; confirm against the drive's label
+or manufacturer model specification if the reported type is unavailable.
 
 ## Run and sign in
 
