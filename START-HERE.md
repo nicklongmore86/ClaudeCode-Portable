@@ -236,15 +236,21 @@ On Windows use `tools\audit\audit.ps1 snapshot S:\logs\before.txt` and
 `audit.ps1 diff S:\logs\before.txt S:\logs\after.txt` (actual shared drive letter).
 The menu's `audit` action also passes these arguments through. Snapshots record
 path, size and modification time for home dotfiles, app config/cache/data,
-macOS Library, Windows APPDATA/LOCALAPPDATA/TEMP, and system temp. Unreadable
-paths are skipped; the audit is a heuristic, not proof of zero host writes.
-The Windows audit uses extended-length paths for enumeration and metadata reads
-(including UNC shares), then records normal readable paths in the existing
-`path|length|ticks` format. It reports a count of unreadable paths with a warning;
-a failed directory read counts once for its entire unscanned subtree. It writes
-only the requested snapshot, with no scratch files. Real Windows validation on
-PowerShell 5.1 and 7, including hosts with long-path support disabled, is still
-required; do not treat a clean report as proof of complete coverage.
+macOS Library, Windows APPDATA/LOCALAPPDATA/TEMP, and system temp. The audit is a
+heuristic, not proof of zero host writes.
+The Windows audit canonicalizes roots and uses extended-length paths for
+local/UNC enumeration, then records readable `path|length|ticks` rows. If a legacy
+.NET runtime rejects extended paths, it retries normal paths and warns once that
+long paths may be missed. Device paths (`\\.\...`) are excluded and counted as
+unreadable. Unreadable paths are counted and reported with a warning; a failed
+directory read counts once for its entire unscanned subtree. Missing roots and
+non-admin access to `%SystemRoot%\Temp` can cause expected unreadable warnings.
+Nested directory junctions/symlinks are not followed, unlike Windows PowerShell
+5.1's `Get-ChildItem -Recurse`; root junctions/symlinks are followed.
+The script writes only the requested snapshot, with no scratch files. PowerShell
+itself may update caches under LOCALAPPDATA, which can appear in snapshot diffs.
+Real Windows validation on PowerShell 5.1 and 7, including hosts with long-path
+support disabled, is still required; a clean report does not prove full coverage.
 Filenames containing newlines can make the text report ambiguous. On Unix,
 root symlinks (including macOS /tmp) are followed, but nested directory symlinks
 are not. Snapshot scratch and sort spills stay in a private directory beside the
