@@ -1,11 +1,7 @@
 # Portable AI Drive — Shared Partitioned-Drive Spec (v1)
 
-Shared contract for both comparison builds:
-- `nicklongmore86/ClaudeCode-Portable` (fork of techjarves/ClaudeCode-Portable)
-- `nicklongmore86/goose-portable` (fork of aaif-goose/goose; packaging lives under `portable/`)
-
-Both builds MUST implement this layout so the same physical SSD can be
-provisioned with either one, and the two can be compared fairly.
+Shared contract for portable AI drive:
+- `nicklongmore86/ClaudeCode-Portable` (production build)
 
 ## Goals
 1. Zero installation on the host: no installers, no global npm/pip, no admin
@@ -97,6 +93,14 @@ AI-WIN/  AI-MAC/  AI-LINUX/   (same shape on each)
 7. Offer a menu: Claude Code / Codex / (build-specific: dashboard or Goose) /
    login setup / audit / exit.
 8. On exit: ensure no child processes remain so the drive can be ejected.
+
+## WSL2 Mode (Linux launcher inside WSL)
+When `launch/linux.sh` is executed inside WSL2 (auto-detected via `/proc/version` or `WSL_DISTRO_NAME`):
+1. **Host CLIs**: Uses the official Linux `claude` and `codex` CLIs installed inside the WSL2 Linux environment (rejecting any Windows `.exe` / `.cmd` / `/mnt/*` shims).
+2. **Drive-resident state**: Rather than writing state to the host WSL rootfs, the launcher maintains all runtime state, caches, temp files, and Codex SQLite databases inside a drive-resident ext4 image (`AI-SHARED/state/wsl-state.ext4`).
+3. **Mounting**: Automatically mounted via unprivileged `udisksctl` or loop mount (`mount -o loop`) during the session, and cleanly unmounted on exit.
+4. **Authoritative credentials**: Authoritative credentials (`claude-oauth-token` and `codex-auth.json`) and cross-platform session locks remain on `AI-SHARED/credentials/`, shared across Windows, macOS, native Linux, and WSL2.
+5. **Zero host footprint**: When the session ends and the image is unmounted, zero files remain on the host WSL system.
 
 ## First-time login (on any machine)
 - Claude: launcher option runs `claude setup-token`, user pastes the printed

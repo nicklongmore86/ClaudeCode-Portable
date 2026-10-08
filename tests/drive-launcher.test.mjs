@@ -188,3 +188,94 @@ for (const aliveSteps of [0,2,100]) {
     assert.ok(!existsSync(group));
   });
 }
+
+test('WSL detection recognizes WSL environment and respects override', t => {
+  const f = fixture(t);
+  let r = f.run('PORTABLE_AI_WSL=1 drive_is_wsl');
+  assert.equal(r.status, 0);
+  r = f.run('PORTABLE_AI_WSL=0 drive_is_wsl');
+  assert.notEqual(r.status, 0);
+  r = f.run('unset PORTABLE_AI_WSL; WSL_DISTRO_NAME=Ubuntu drive_is_wsl');
+  assert.equal(r.status, 0);
+  r = f.run('unset PORTABLE_AI_WSL; unset WSL_DISTRO_NAME; unset WSL_INTEROP; drive_is_wsl() { [ "$PORTABLE_AI_WSL" = 1 ]; }; drive_is_wsl');
+  assert.notEqual(r.status, 0);
+});
+
+test('WSL CLI resolution finds Linux binaries and rejects Windows shims and /mnt paths', t => {
+  const f = fixture(t);
+  const wslBin = join(f.dir, 'wsl-bin'), winBin = join(f.dir, 'win-bin'), mntBin = join(f.dir, 'mnt-bin');
+  mkdirSync(wslBin); mkdirSync(winBin); mkdirSync(mntBin);
+  writeFileSync(join(wslBin, 'claude'), '#!/bin/sh\n', { mode: 0o755 });
+  writeFileSync(join(winBin, 'claude.cmd'), '@echo off\n', { mode: 0o755 });
+  writeFileSync(join(winBin, 'claude.exe'), 'MZ\n', { mode: 0o755 });
+  writeFileSync(join(mntBin, 'codex'), '#!/bin/sh\n', { mode: 0o755 });
+  f.env.PATH = `${winBin}:${wslBin}:${process.env.PATH}`;
+  let r = f.run('drive_resolve_wsl_cli claude');
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout.trim(), join(wslBin, 'claude'));
+
+  f.env.PATH = `/mnt/c/some/path:${winBin}`;
+  r = f.run('drive_resolve_wsl_cli codex');
+  assert.notEqual(r.status, 0);
+});
+
+test('WSL discovery creates sparse ext4 image, uses existing mount or mounts loopback', t => {
+  const f = fixture(t);
+  const shared = f.shared;
+  f.mock('truncate', 'touch "$3"');
+  f.mock('mkfs.ext4', ':');
+  f.mock('findmnt', 'exit 1');
+  f.mock('udisksctl', `
+    case $1 in
+      loop-setup) printf "Mapped file %s as /dev/loop42.\\n" "$3";;
+      mount) printf "Mounted /dev/loop42 at %s.\\n" "$MOCK_NATIVE";;
+    esac
+  `);
+  let r = f.run(`PORTABLE_AI_WSL=1 drive_wsl_discover ${quote(shared)}`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), f.native);
+  assert.ok(existsSync(join(shared, 'state/wsl-state.ext4')));
+
+  f.mock('findmnt', `printf '%s\\n' "${f.native}"`);
+  r = f.run(`PORTABLE_AI_WSL=1 drive_wsl_discover ${quote(shared)}`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), f.native);
+});
+
+test('WSL launcher executes resolved Linux CLIs, blocks dashboard, and guides missing CLIs', t => {
+  const f = fixture(t);
+  cpSync(join(root, 'launch'), join(f.shared, 'launch'), { recursive: true });
+  const wslBin = join(f.dir, 'wsl-bin');
+  mkdirSync(wslBin);
+  writeFileSync(join(wslBin, 'claude'), '#!/bin/sh\nprintf "claude-run:%s\\n" "$*"\n', { mode: 0o755 });
+  writeFileSync(join(wslBin, 'codex'), '#!/bin/sh\nprintf "codex-run:%s\\n" "$*"\n', { mode: 0o755 });
+  f.env.PATH = `${wslBin}:${process.env.PATH}`;
+  f.env.PORTABLE_AI_WSL = '1';
+  f.mock('findmnt', `printf '%s\\n' "${f.native}"`);
+
+  let r = f.run(`drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} claude arg1 'arg 2'`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /claude-run:arg1 arg 2/);
+
+  r = f.run(`drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} dashboard`);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Dashboard is not supported in WSL mode/);
+
+  r = f.run(`PATH=/usr/bin:/bin drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} claude`);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Linux 'claude' CLI not found.*Install Claude Code inside WSL Ubuntu/);
+});
+
+test('WSL session unmounts loop device and cleans up on exit', t => {
+  const f = fixture(t);
+  const calls = join(f.dir, 'unmount-calls');
+  f.mock('udisksctl', `printf '%s\\n' "$*" >> ${quote(calls)}`);
+  const r = f.run(`
+    DRIVE_WSL_LOOP_DEV=/dev/loop99; DRIVE_WSL_MOUNT_TARGET=/tmp/ai-drive-wsl-1000;
+    drive_wsl_unmount
+  `);
+  assert.equal(r.status, 0, r.stderr);
+  const events = readFileSync(calls, 'utf8').trim().split('\n');
+  assert.ok(events.includes('unmount -b /dev/loop99'));
+  assert.ok(events.includes('loop-delete -b /dev/loop99'));
+});

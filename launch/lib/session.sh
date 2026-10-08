@@ -48,6 +48,7 @@ drive_finish() {
     trap - EXIT INT TERM HUP
     drive_cleanup
     drive_codex_end || drive_exit_status=1
+    drive_wsl_unmount
     exit "$drive_exit_status"
 }
 
@@ -86,7 +87,7 @@ drive_codex() {
         return 1
     fi
     drive_auth_ready=1
-    drive_run "$drive_bin/codex/bin/codex" --no-daemon "$@"
+    drive_run "${DRIVE_CODEX_EXE:-$drive_bin/codex/bin/codex}" --no-daemon "$@"
     drive_codex_status=$?
     drive_codex_end || return 1
     return "$drive_codex_status"
@@ -98,7 +99,11 @@ drive_login() {
     case $drive_choice in
         1)
             unset CLAUDE_CODE_OAUTH_TOKEN
-            drive_run "$drive_bin/claude" setup-token || return 1
+            if drive_is_wsl && [ -z "${DRIVE_CLAUDE_EXE:-}" ]; then
+                drive_fail "Linux 'claude' CLI not found in WSL. Install Claude Code inside WSL Ubuntu first."
+                return 1
+            fi
+            drive_run "${DRIVE_CLAUDE_EXE:-$drive_bin/claude}" setup-token || return 1
             printf 'Paste the token (hidden): ' >&2
             IFS= read -r -s drive_token || return 1
             printf '\n' >&2
@@ -110,8 +115,20 @@ drive_login() {
             chmod 600 "$drive_shared/credentials/claude-oauth-token.next" 2>/dev/null || :
             mv -f "$drive_shared/credentials/claude-oauth-token.next" "$drive_shared/credentials/claude-oauth-token"
             ;;
-        2) drive_codex login --device-auth;;
-        3) drive_codex login;;
+        2)
+            if drive_is_wsl && [ -z "${DRIVE_CODEX_EXE:-}" ]; then
+                drive_fail "Linux 'codex' CLI not found in WSL. Install Codex inside WSL Ubuntu first."
+                return 1
+            fi
+            drive_codex login --device-auth
+            ;;
+        3)
+            if drive_is_wsl && [ -z "${DRIVE_CODEX_EXE:-}" ]; then
+                drive_fail "Linux 'codex' CLI not found in WSL. Install Codex inside WSL Ubuntu first."
+                return 1
+            fi
+            drive_codex login
+            ;;
         *) drive_fail 'Unknown login option';;
     esac
 }
@@ -121,7 +138,7 @@ drive_main() {
     drive_os=$1 drive_entry=$2
     shift 2
     drive_shared=$(CDPATH='' cd -- "$(dirname -- "$drive_entry")/.." && pwd -P) || exit 1
-    drive_native=$(drive_discover "$drive_os") || exit 1
+    drive_native=$(drive_discover "$drive_os" "$drive_shared") || exit 1
     drive_target=$drive_os-$(drive_arch) || exit 1
     drive_host_home=$HOME
     drive_environment "$drive_shared" "$drive_native" "$drive_target" || exit 1
@@ -133,9 +150,27 @@ drive_main() {
             IFS= read -r drive_selected || exit 0
         else drive_selected=$drive_action; fi
         case $drive_selected in
-            1|claude) drive_run "$drive_bin/claude" "$@";;
-            2|codex) drive_codex "$@";;
-            3|dashboard) drive_run "$drive_bin/node/bin/node" "$drive_native/tools/dashboard/tools/launcher.mjs" dashboard "$@";;
+            1|claude)
+                if drive_is_wsl && [ -z "${DRIVE_CLAUDE_EXE:-}" ]; then
+                    drive_fail "Linux 'claude' CLI not found. Install Claude Code inside WSL Ubuntu (e.g. 'npm install -g @anthropic-ai/claude-code'). Note: Windows .exe/.cmd shims are not used in WSL mode."
+                else
+                    drive_run "${DRIVE_CLAUDE_EXE:-$drive_bin/claude}" "$@"
+                fi
+                ;;
+            2|codex)
+                if drive_is_wsl && [ -z "${DRIVE_CODEX_EXE:-}" ]; then
+                    drive_fail "Linux 'codex' CLI not found. Install Codex inside WSL Ubuntu (e.g. 'npm install -g @openai/codex'). Note: Windows .exe/.cmd shims are not used in WSL mode."
+                else
+                    drive_codex "$@"
+                fi
+                ;;
+            3|dashboard)
+                if drive_is_wsl; then
+                    drive_fail "Dashboard is not supported in WSL mode. Use launch/windows.cmd for the dashboard on Windows."
+                else
+                    drive_run "$drive_bin/node/bin/node" "$drive_native/tools/dashboard/tools/launcher.mjs" dashboard "$@"
+                fi
+                ;;
             4|login) drive_login;;
             5|audit)
                 if [ "$drive_action" = menu ]; then

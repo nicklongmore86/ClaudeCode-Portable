@@ -175,6 +175,21 @@ children, never shell profiles or the registry. Host API keys/base URLs are
 removed. HOME, XDG, temp, Claude state and Codex state point to the native volume.
 CODEX_HOME and CODEX_SQLITE_HOME are under `state/codex`, never shared exFAT or tmp.
 
+### WSL2 Mode (Linux in Windows Subsystem for Linux)
+
+When running inside WSL2 (e.g. Ubuntu on Windows), execute the Linux launcher directly:
+
+```sh
+/mnt/d/launch/linux.sh          # replace 'd' with your AI-SHARED drive letter
+```
+
+The launcher automatically detects the WSL2 environment:
+- **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Windows executables (`.exe` / `.cmd` / `/mnt/*` shims) are strictly ignored.
+- **Drive-resident ext4 state**: To guarantee zero host footprint, runtime state, caches, temp files, and Codex SQLite databases are stored in a 4GB sparse ext4 image on the drive (`AI-SHARED/state/wsl-state.ext4`). The image is auto-created on first run and mounted via unprivileged `udisksctl` or loop mount.
+- **Shared authoritative credentials**: `claude-oauth-token` and `codex-auth.json` on `AI-SHARED/credentials/` remain authoritative and synchronized across Windows, native Linux, macOS, and WSL2.
+- **Clean teardown**: On exit, the loop image is unmounted and any temporary mountpoint removed, leaving zero files on the WSL host.
+- **Dashboard**: The Node dashboard is scoped to native Windows (`launch/windows.cmd`); inside WSL2, use the CLI options (Claude Code / Codex / Login / Audit).
+
 Choose **Login setup → Claude subscription**. The official `claude setup-token`
 performs OAuth and prints a token. Paste it at the hidden prompt; the launcher
 stores `AI-SHARED/credentials/claude-oauth-token` and passes it as
