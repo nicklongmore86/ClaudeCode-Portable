@@ -404,4 +404,120 @@ test('omnigent-host wrapper executes relative Python entrypoint with zero host f
   assert.ok(calls.some(call => call.includes('-m omnigent.cli host https://omni.example.test --no-open status')));
 });
 
+test('launcher menu option 4 launches Omnigent Host with supervisor and credential sync', t => {
+  const f = fixture(t);
+  cpSync(join(root, 'launch'), join(f.shared, 'launch'), { recursive: true });
+
+  const pyDir = join(f.native, 'bin/linux-x64/python/bin');
+  const termDir = join(f.native, 'bin/linux-x64/python/share/terminfo');
+  mkdirSync(pyDir, { recursive: true });
+  mkdirSync(termDir, { recursive: true });
+
+  mkdirSync(join(f.shared, 'credentials'), { recursive: true });
+  writeFileSync(join(f.shared, 'credentials/omnigent-server-url'), 'https://menu.omni.test\n');
+  writeFileSync(join(f.shared, 'credentials/codex-auth.json'), 'authoritative-codex-auth\n');
+
+  const sysPy = spawnSync('which', ['python3'], { encoding: 'utf8' }).stdout.trim();
+  const recordFile = join(f.dir, 'menu-omnigent.txt');
+  writeFileSync(join(pyDir, 'python3'), `#!/bin/sh
+if [ "$1" = "-c" ]; then
+  PYTHONHOME= exec "${sysPy}" "$@"
+fi
+printf 'RUN:%s\\n' "$*" >> ${quote(recordFile)}
+[ -f "$CODEX_HOME/auth.json" ] && printf 'AUTH:%s\\n' "$(cat "$CODEX_HOME/auth.json")" >> ${quote(recordFile)}
+[ -f "$CODEX_HOME/config.toml" ] && printf 'CONFIG:EXISTS\\n' >> ${quote(recordFile)}
+printf 'HOST_ID:%s\\n' "$OMNIGENT_HOST_ID" >> ${quote(recordFile)}
+# Simulate codex auth refresh during the host session
+printf 'refreshed-codex-auth' > "$CODEX_HOME/auth.json"
+exit 0
+`, { mode: 0o755 });
+
+  f.mock('findmnt', `printf '%s\\n' "${f.native}"`);
+  f.mock('sha256sum', 'printf "machine-hash-menu  -\\n"');
+
+  // Input: 4 (Omnigent Host), then 7 (Exit)
+  const r = f.run(`drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))}`, { input: '4\n7\n' });
+  assert.equal(r.status, 0, r.stderr);
+
+  const logs = readFileSync(recordFile, 'utf8').trim().split('\n');
+  assert.ok(logs.some(l => l.includes('RUN:-m omnigent.cli host https://menu.omni.test --no-open')));
+  assert.ok(logs.some(l => l.includes('AUTH:authoritative-codex-auth')));
+  assert.ok(logs.some(l => l.includes('CONFIG:EXISTS')));
+  assert.ok(logs.some(l => l.startsWith('HOST_ID:') && l.length > 10));
+
+  // Verify refreshed auth synced back and lock directory removed
+  assert.equal(readFileSync(join(f.shared, 'credentials/codex-auth.json'), 'utf8'), 'refreshed-codex-auth');
+  assert.ok(!existsSync(join(f.shared, 'credentials/codex-auth.lock')));
+});
+
+test('launcher cli action omnigent and host executes supervised host agent with extra arguments', t => {
+  const f = fixture(t);
+  cpSync(join(root, 'launch'), join(f.shared, 'launch'), { recursive: true });
+
+  const pyDir = join(f.native, 'bin/linux-x64/python/bin');
+  const termDir = join(f.native, 'bin/linux-x64/python/share/terminfo');
+  mkdirSync(pyDir, { recursive: true });
+  mkdirSync(termDir, { recursive: true });
+
+  mkdirSync(join(f.shared, 'credentials'), { recursive: true });
+  writeFileSync(join(f.shared, 'credentials/omnigent-server-url'), 'https://default.omni.test\n');
+
+  const sysPy = spawnSync('which', ['python3'], { encoding: 'utf8' }).stdout.trim();
+  const recordFile = join(f.dir, 'cli-omnigent.txt');
+  writeFileSync(join(pyDir, 'python3'), `#!/bin/sh
+if [ "$1" = "-c" ]; then
+  PYTHONHOME= exec "${sysPy}" "$@"
+fi
+printf 'CLI_RUN:%s\\n' "$*" >> ${quote(recordFile)}
+exit 3
+`, { mode: 0o755 });
+
+  f.mock('findmnt', `printf '%s\\n' "${f.native}"`);
+  f.mock('sha256sum', 'printf "machine-hash-cli  -\\n"');
+
+  // Passing --server override and extra arguments
+  const r = f.run(`drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} omnigent --server https://cli-override.test --debug-log`);
+  assert.equal(r.status, 3, r.stderr);
+
+  const logs = readFileSync(recordFile, 'utf8').trim().split('\n');
+  assert.ok(logs.some(l => l.includes('CLI_RUN:-m omnigent.cli host https://cli-override.test --no-open --debug-log')));
+  assert.ok(!existsSync(join(f.shared, 'credentials/codex-auth.lock')));
+});
+
+test('login setup option 4 configures and updates Omnigent server URL', t => {
+  const f = fixture(t);
+  const credsDir = join(f.shared, 'credentials');
+  mkdirSync(credsDir, { recursive: true });
+  const urlFile = join(credsDir, 'omnigent-server-url');
+
+  // 1. Initial configuration from login menu
+  let r = f.run(`${f.setup} drive_login`, { input: '4\nhttps://configured.omni.test\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(urlFile, 'utf8').trim(), 'https://configured.omni.test');
+
+  // 2. Press Enter to keep current URL
+  r = f.run(`${f.setup} drive_login`, { input: '4\n\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(urlFile, 'utf8').trim(), 'https://configured.omni.test');
+
+  // 3. Update to a new valid URL
+  r = f.run(`${f.setup} drive_login`, { input: '4\nwss://updated.omni.test\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(urlFile, 'utf8').trim(), 'wss://updated.omni.test');
+
+  // 4. Invalid URL is rejected
+  r = f.run(`${f.setup} drive_login`, { input: '4\nftp://invalid-scheme.test\n' });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Invalid server URL/);
+  // Stored URL remains unchanged
+  assert.equal(readFileSync(urlFile, 'utf8').trim(), 'wss://updated.omni.test');
+});
+
+test('omnigent host rejects execution on unsupported platforms', t => {
+  const f = fixture(t);
+  const r = f.run(`drive_os=windows; drive_omnigent`);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Omnigent Host is currently supported on Linux and macOS only/);
+});
+
 
