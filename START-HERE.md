@@ -238,9 +238,13 @@ The menu's `audit` action also passes these arguments through. Snapshots record
 path, size and modification time for home dotfiles, app config/cache/data,
 macOS Library, Windows APPDATA/LOCALAPPDATA/TEMP, and system temp. Unreadable
 paths are skipped; the audit is a heuristic, not proof of zero host writes.
-Windows PowerShell long paths on hosts with long-path support disabled remain
-unverified and may be skipped by the provider; do not treat a clean report as
-coverage of those paths.
+The Windows audit uses extended-length paths for enumeration and metadata reads
+(including UNC shares), then records normal readable paths in the existing
+`path|length|ticks` format. It reports a count of unreadable paths with a warning;
+a failed directory read counts once for its entire unscanned subtree. It writes
+only the requested snapshot, with no scratch files. Real Windows validation on
+PowerShell 5.1 and 7, including hosts with long-path support disabled, is still
+required; do not treat a clean report as proof of complete coverage.
 Filenames containing newlines can make the text report ambiguous. On Unix,
 root symlinks (including macOS /tmp) are followed, but nested directory symlinks
 are not. Snapshot scratch and sort spills stay in a private directory beside the

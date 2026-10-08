@@ -127,6 +127,11 @@ When `launch/linux.sh` is executed inside WSL2 (auto-detected via `/proc/version
 (home dir dotfiles, `~/.claude*`, `~/.codex`, `~/.config`, `~/.cache`,
 `~/.local`, `%APPDATA%`, `%LOCALAPPDATA%`, `%TEMP%`, `~/Library/...`, system
 temp) before and after a session; print a diff report. Pure sh / PowerShell.
+The Windows script enumerates extended-length local and UNC paths, storing normal
+paths as `path|length|ticks`. Unreadable paths are counted and warned about (an
+unreadable directory counts once for its subtree). Only the requested snapshot
+is written. Real Windows PowerShell 5.1 / 7 validation, including hosts with
+long-path support disabled, is still required.
 
 ## Known, documented limits
 - Gatekeeper / SmartScreen prompts on first run; managed hosts may block.
