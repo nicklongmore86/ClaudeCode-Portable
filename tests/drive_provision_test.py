@@ -21,6 +21,25 @@ class ProvisionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
 
+    def test_npm_cli_lookup_fallbacks_and_failure(self):
+        node = '/prep/node/bin/node'
+        npm = '/prep/npm-wrapper'
+        candidates = [
+            Path('/prep/node/bin/node_modules/npm/bin/npm-cli.js'),
+            Path('/prep/node/lib/node_modules/npm/bin/npm-cli.js'),
+            Path('/usr/share/nodejs/npm/bin/npm-cli.js'),
+            Path('/usr/lib/node_modules/npm/bin/npm-cli.js'),
+        ]
+        for expected in candidates:
+            with self.subTest(expected=expected), patch.object(Path, 'is_file', lambda p: p.resolve() == expected):
+                self.assertEqual(drive.find_npm_cli(node, npm).resolve(), expected)
+        with patch.object(Path, 'is_file', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'Cannot locate'):
+                drive.find_npm_cli(node, npm)
+        direct = self.base / 'npm-cli.js'
+        direct.write_text('// fixture')
+        self.assertEqual(drive.find_npm_cli(node, str(direct)), direct)
+
     def test_all_six_targets_use_pinned_official_packages(self):
         self.assertEqual(set(drive.MANIFEST['targets']), {f'{osname}-{arch}' for osname in ['linux', 'darwin', 'win32'] for arch in ['x64', 'arm64']})
         for target, assets in drive.MANIFEST['targets'].items():

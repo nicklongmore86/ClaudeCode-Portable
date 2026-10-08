@@ -37,7 +37,7 @@ while ($true) {
                         $secret = Read-Host 'Paste token (hidden)' -AsSecureString
                         $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
                         try {
-                            $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+                            $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr).Replace("`r", '').Replace("`n", '').Trim()
                             if (!$token) { throw 'Empty token; nothing saved.' }
                             $credentials = Join-Path $shared 'credentials'
                             [IO.Directory]::CreateDirectory($credentials) | Out-Null

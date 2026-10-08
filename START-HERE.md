@@ -21,7 +21,8 @@ parted and e2fsprogs. Inspect devices yourself with `lsblk -o PATH,MODEL,SERIAL,
 Preview using `sh provision/partition-linux.sh --device /dev/sdX --dry-run`.
 To erase a deliberately selected, unmounted, non-system disk, run the same
 command explicitly as root without `--dry-run`. It requires a terminal and an
-exact typed `MODEL / SERIAL`, refuses mounted disks, swap and unprovable system
+exact typed `MODEL / SERIAL`. Missing, null or whitespace-only model/serial
+values are refused cleanly; there is no identity bypass. It refuses mounted disks, swap and unprovable system
 disk topology, and rechecks before writing. It never invokes sudo. **Never use a
 real device for tests.** Device hot-swapping during partitioning is unsafe.
 
@@ -147,7 +148,14 @@ The menu's `audit` action also passes these arguments through. Snapshots record
 path, size and modification time for home dotfiles, app config/cache/data,
 macOS Library, Windows APPDATA/LOCALAPPDATA/TEMP, and system temp. Unreadable
 paths are skipped; the audit is a heuristic, not proof of zero host writes.
-Filenames containing newlines can make the text report ambiguous.
+Windows PowerShell long paths on hosts with long-path support disabled remain
+unverified and may be skipped by the provider; do not treat a clean report as
+coverage of those paths.
+Filenames containing newlines can make the text report ambiguous. On Unix,
+root symlinks (including macOS /tmp) are followed, but nested directory symlinks
+are not. Snapshot scratch and sort spills stay in a private directory beside the
+drive output and are removed on success, failure or a handled signal. Optional
+`ROOT ...` arguments after the snapshot output restrict the paths scanned.
 
 - Gatekeeper/SmartScreen can prompt; managed hosts may block execution entirely.
 - Linux `noexec` mounts block binaries. Try `udisksctl mount -b /dev/disk/by-label/AI-LINUX`.
@@ -172,7 +180,7 @@ Official references: [Claude release integrity](https://code.claude.com/docs/en/
 
 ## Development checks
 
-Run `npm test` (all `tests/*.test.mjs`, including mocked drive tests and six Python
+Run `npm test` (all `tests/*.test.mjs`, including mocked drive tests and seven Python
 provisioner test functions), then `npm run check`. Python 3.12+ is needed by the
 provisioner tests. Run `rg --files -g '*.sh' -g '*.command' -0 | xargs -0 shellcheck -x`
 for every shell entry/helper, including upstream scripts. When PowerShell is

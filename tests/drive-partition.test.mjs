@@ -37,3 +37,14 @@ test('partition helper refuses the physical ancestor of the system root',t=>{
   const r=fixture(t)(['--device','/dev/system','--dry-run']);
   assert.notEqual(r.status,0);assert.match(r.stderr,/Refusing system disk/);
 });
+
+for (const key of ['model','serial']) {
+  for (const [label,value] of [['null',null],['blank',' \t\r\n'],['missing',undefined]]) {
+    test(`partition helper cleanly refuses ${label} ${key}`,t=>{
+      const r=fixture(t,d=>d[key]=value)(['--device','/dev/mockdrive','--dry-run']);
+      assert.equal(r.status,1);
+      assert.equal(r.stderr.trim(),'Refusing device without both model and serial identity');
+      assert.equal(r.stdout,'');
+    });
+  }
+}

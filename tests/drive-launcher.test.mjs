@@ -147,3 +147,44 @@ test('Linux entrypoint resolves shared volume from itself and preserves project 
   assert.equal(r.status,0,r.stderr);
   assert.deepEqual(r.stdout.trim().split('\n'),[f.dir,'--resume','space argument',join(f.native,'state/claude')]);
 });
+
+for (const entry of ['linux.sh','macos.command']) {
+  test(`${entry} removes CR/LF from stored token without printing it`,t=>{
+    const f=fixture(t), token='fake-private-token';
+    cpSync(join(root,'launch'),join(f.shared,'launch'),{recursive:true});
+    mkdirSync(join(f.shared,'credentials'));
+    writeFileSync(join(f.shared,'credentials/claude-oauth-token'),`${token}\r\n\r\n`);
+    f.mock('findmnt','printf "%s\\n" "$MOCK_NATIVE"');f.mock('uname','printf x86_64');
+    f.mock('diskutil','printf "   Mount Point: %s\\n" "$MOCK_NATIVE"');
+    const target=entry==='linux.sh'?'linux-x64':'darwin-x64';
+    mkdirSync(join(f.native,`bin/${target}`),{recursive:true});
+    writeFileSync(join(f.native,`bin/${target}/claude`),`#!/bin/sh\n[ "$CLAUDE_CODE_OAUTH_TOKEN" = '${token}' ]\n`,{mode:0o755});
+    const r=spawnSync('bash',[join(f.shared,'launch',entry),'claude'],{env:f.env,encoding:'utf8'});
+    assert.equal(r.status,0,r.stderr);assert.ok(!(r.stdout+r.stderr).includes(token));
+  });
+}
+test('Claude paste strips CR/LF before saving and rejects newline-only input',t=>{
+  const f=fixture(t);
+  let r=f.run(`${f.setup} drive_run() { :; }; drive_login`,{input:'1\nfake-private-token\r\n'});
+  assert.equal(r.status,0,r.stderr);
+  const path=join(f.shared,'credentials/claude-oauth-token');
+  assert.equal(readFileSync(path,'utf8'),'fake-private-token');
+  assert.ok(!(r.stdout+r.stderr).includes('fake-private-token'));
+  r=f.run(`${f.setup} drive_run() { :; }; drive_login`,{input:'1\n\r\n'});
+  assert.equal(r.status,1);assert.equal(readFileSync(path,'utf8'),'fake-private-token');
+});
+for (const aliveSteps of [0,2,100]) {
+  test(`cleanup polls process group and escalates only at deadline (${aliveSteps})`,t=>{
+    const f=fixture(t), calls=join(f.dir,'calls'), group=join(f.dir,'group');
+    writeFileSync(group,'999999');
+    const r=f.run(`drive_group_file=${quote(group)}; probes=0;
+      kill() { printf '%s\\n' "$1" >> ${quote(calls)}; if [ "$1" = -0 ]; then probes=$((probes + 1)); [ "$probes" -le ${aliveSteps} ]; fi; };
+      sleep() { printf 'sleep:%s\\n' "$1" >> ${quote(calls)}; };
+      drive_cleanup`);
+    assert.equal(r.status,0,r.stderr);
+    const events=readFileSync(calls,'utf8').trim().split('\n');
+    assert.equal(events.filter(e=>e==='sleep:0.1').length,Math.min(aliveSteps,20));
+    assert.equal(events.includes('-KILL'),aliveSteps>20);
+    assert.ok(!existsSync(group));
+  });
+}

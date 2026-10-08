@@ -18,12 +18,13 @@ public static class DriveChild {
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcess(string app, StringBuilder command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref Startup startup, out ProcessInfo info);
     [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
-    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
     [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint code);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
     public static string Quote(string value) {
+        if (value == null) value = String.Empty;
         var b = new StringBuilder("\""); int slashes=0;
         foreach (char c in value) {
             if(c=='\\') { slashes++; continue; }

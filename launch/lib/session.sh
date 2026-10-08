@@ -11,8 +11,14 @@ drive_cleanup() {
             ''|*[!0-9]*) ;;
             *)
                 kill -TERM -- "-$drive_child" 2>/dev/null || :
-                sleep 1
-                kill -KILL -- "-$drive_child" 2>/dev/null || :
+                drive_poll=0
+                while kill -0 -- "-$drive_child" 2>/dev/null && [ "$drive_poll" -lt 20 ]; do
+                    sleep 0.1
+                    drive_poll=$((drive_poll + 1))
+                done
+                if kill -0 -- "-$drive_child" 2>/dev/null; then
+                    kill -KILL -- "-$drive_child" 2>/dev/null || :
+                fi
                 ;;
         esac
         if [ -n "${drive_supervisor:-}" ]; then
@@ -96,9 +102,10 @@ drive_login() {
             printf 'Paste the token (hidden): ' >&2
             IFS= read -r -s drive_token || return 1
             printf '\n' >&2
+            drive_token=$(printf '%s' "$drive_token" | tr -d '\r\n') || return 1
             [ -n "$drive_token" ] || { drive_fail 'Empty token; nothing saved.'; return 1; }
             mkdir -p "$drive_shared/credentials" || return 1
-            printf '%s\n' "$drive_token" > "$drive_shared/credentials/claude-oauth-token.next" || return 1
+            printf '%s' "$drive_token" > "$drive_shared/credentials/claude-oauth-token.next" || return 1
             unset drive_token
             chmod 600 "$drive_shared/credentials/claude-oauth-token.next" 2>/dev/null || :
             mv -f "$drive_shared/credentials/claude-oauth-token.next" "$drive_shared/credentials/claude-oauth-token"

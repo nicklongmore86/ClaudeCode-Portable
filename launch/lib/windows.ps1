@@ -26,7 +26,7 @@ function Get-DriveEnvironment($Shared, $Native, $Target) {
     $childEnv.PORTABLE_AI_RUNTIME_DIR = Join-Path $Native 'tools\dashboard-runtime'
     $childEnv.PATH = "$bin;$bin\codex\bin;$bin\codex\codex-path;$bin\node;$Native\tools\portable-git\cmd;" + $childEnv.PATH
     $token = Join-Path $Shared 'credentials\claude-oauth-token'
-    if (Test-Path -LiteralPath $token) { $childEnv.CLAUDE_CODE_OAUTH_TOKEN = [IO.File]::ReadAllText($token).Trim() }
+    if (Test-Path -LiteralPath $token) { $childEnv.CLAUDE_CODE_OAUTH_TOKEN = [IO.File]::ReadAllText($token).Replace("`r", '').Replace("`n", '').Trim() }
     return $childEnv
 }
 

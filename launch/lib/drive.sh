@@ -63,7 +63,7 @@ drive_environment() {
     export PORTABLE_AI_CLAUDE_EXECUTABLE="$drive_bin/claude" PORTABLE_AI_NO_OPEN=1
     export PATH="$drive_bin:$drive_bin/codex/bin:$drive_bin/codex/codex-path:$drive_bin/node/bin:$PATH"
     if [ -f "$drive_shared/credentials/claude-oauth-token" ]; then
-        CLAUDE_CODE_OAUTH_TOKEN=$(cat "$drive_shared/credentials/claude-oauth-token") || return 1
+        CLAUDE_CODE_OAUTH_TOKEN=$(tr -d '\r\n' < "$drive_shared/credentials/claude-oauth-token") || return 1
         export CLAUDE_CODE_OAUTH_TOKEN
     fi
 }

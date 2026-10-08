@@ -82,6 +82,21 @@ def record_files(native, shared, target):
     (shared / 'checksums' / f'{target}-SHA256SUMS').write_text(''.join(rows))
 
 
+def find_npm_cli(node, npm):
+    npm_path = Path(npm).resolve()
+    node_dir = Path(node).resolve().parent
+    candidates = ([npm_path] if npm_path.suffix == '.js' else []) + [
+        node_dir / 'node_modules/npm/bin/npm-cli.js',
+        node_dir / '../lib/node_modules/npm/bin/npm-cli.js',
+        Path('/usr/share/nodejs/npm/bin/npm-cli.js'),
+        Path('/usr/lib/node_modules/npm/bin/npm-cli.js'),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise ValueError('Cannot locate prep-machine npm-cli.js')
+
+
 def prepare(args):
     shared, native = args.shared.resolve(), args.native.resolve()
     if shared == native or shared in native.parents or native in shared.parents:
@@ -173,10 +188,7 @@ def prepare(args):
     npm = shutil.which('npm')
     if not node or not npm:
         raise ValueError('Prep-machine Node/npm are required for dashboard dependencies')
-    npm_path = Path(npm).resolve()
-    npm_cli = npm_path if npm_path.suffix == '.js' else Path(node).parent / 'node_modules/npm/bin/npm-cli.js'
-    if not npm_cli.is_file():
-        raise ValueError('Cannot locate prep-machine npm-cli.js')
+    npm_cli = find_npm_cli(node, npm)
     subprocess.run([node, str(npm_cli), 'install', '--prefix', str(deps), '--ignore-scripts', '--omit=optional',
                     '--no-audit', '--no-fund', '--cache', str(native / 'state/npm-cache')], check=True,
                    env={**os.environ, 'npm_config_update_notifier': 'false'})
