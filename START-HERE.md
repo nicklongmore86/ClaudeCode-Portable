@@ -184,8 +184,8 @@ When running inside WSL2 (e.g. Ubuntu on Windows), execute the Linux launcher di
 ```
 
 The launcher automatically detects the WSL2 environment:
-- **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Windows executables (`.exe` / `.cmd` / `/mnt/*` shims) are strictly ignored.
-- **Drive-resident ext4 state**: Runtime state, caches, temp files, and Codex SQLite databases are stored in `AI-SHARED/state/wsl-state.ext4`. First run creates and formats a temporary image on the drive, owned by your Linux UID/GID, then renames it into place. The default is 4 GiB; set `PORTABLE_AI_WSL_IMAGE_SIZE=2G` (integer `M` or `G`, minimum `64M`) before first run to change it. Existing images are not resized. **exFAT allocates the full size; this is not sparse storage.** Free space is checked first. FAT32 cannot hold the default 4 GiB file: use exFAT or a smaller size. If DrvFS hides the underlying filesystem type, allocation failure still removes the partial file.
+- **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Discovery works with non-interactive `wsl --exec` launches: it checks PATH, then the original distro home's `~/.local/bin`, `~/.npm-global/bin`, `~/.claude/local`, `~/.bun/bin`, active/default nvm bins (preferring `~/.nvm/alias/default`), remaining nvm versions newest first, `/usr/local/bin` and `/usr/bin`. No startup files are sourced. Windows executables (`.exe` / `.cmd` / `.bat`, `/mnt/*`, DrvFS/9p/virtiofs and PE shims) are rejected after symlink resolution.
+- **Drive-resident ext4 state**: Runtime state, caches, temp files, and Codex SQLite databases are stored in `AI-SHARED/state/wsl-state.ext4`. First run creates and formats a temporary image inside the session lock directory, owned by your Linux UID/GID, then renames it into place. Formatting requires e2fsprogs >= 1.42 for `root_owner`. The default is 4 GiB; set `PORTABLE_AI_WSL_IMAGE_SIZE=2G` (integer `M` or `G`, minimum `64M`) before first run to change it. Existing images are not resized. **exFAT allocates the full size; this is not sparse storage.** Free space is checked first. FAT32 cannot hold the default 4 GiB file: use exFAT or a smaller size. The FAT32 pre-check applies only to directly visible filesystems; DrvFS reports v9fs/virtiofs instead, so allocation errors are handled and the partial file removed.
 - **Shared authoritative credentials**: `claude-oauth-token` and `codex-auth.json` on `AI-SHARED/credentials/` remain authoritative and synchronized across Windows, native Linux, macOS, and WSL2.
 - **Clean teardown**: Every exit runs cleanup: sync, unmount, then detach the loop device. A failure returns a non-zero status and warns **do NOT unplug the drive**; the image lock remains for recovery. A sudo mount uses an owned, private temporary directory under `$XDG_RUNTIME_DIR` (or `/tmp`) with `nosuid,nodev`. It is removed after successful cleanup; a crash or failed unmount can leave this empty host directory behind. Sudo/udisks may also write host logs and sudo timestamps; this mode does not promise zero host files.
 - **Dashboard**: The Node dashboard is scoped to native Windows (`launch/windows.cmd`); inside WSL2, use the CLI options (Claude Code / Codex / Login / Audit).
@@ -195,19 +195,39 @@ to disable detection (for example in a container inheriting WSL variables).
 If `AI-LINUX` is already mounted, the launcher uses that native partition.
 Otherwise it tries `udisksctl` loop setup; this requires a working udisks service
 and authorization policy, which many WSL2 installations lack. If setup is
-unavailable, the launcher asks before using sudo to attach/mount the image.
-It never falls back to host runtime state.
+unavailable, the launcher asks on `/dev/tty` before using sudo to attach/mount
+the image. Without a controlling terminal it fails clearly; piped CLI input is
+never consumed as consent. It never falls back to host runtime state.
+
+The same sudo invocation starts a root-owned, detached watchdog before attaching
+and mounting. On normal exit the launcher refreshes its sudo ticket (`sudo -v`)
+and tears down itself. On HUP/TERM it uses `sudo -n` only. If authentication has
+expired or the terminal has closed, the watchdog waits for acquisition and the
+launcher to exit, then syncs, unmounts, detaches and verifies no attachment remains.
+Only after successful teardown may the watchdog remove the matching session-token
+lock. The launcher follows the same verification rule. Both paths are idempotent;
+the watchdog exits after normal cleanup or its single recovery attempt, including
+failure. If both fail, the lock remains for manual recovery. Keep the drive
+connected until the lock disappears; a closed terminal cannot display warnings.
+An empty mountpoint removal failure only warns and does not retain the drive lock.
+The watchdog cannot survive WSL shutdown, power loss or forced termination of the
+root process; those still require manual recovery.
+
+Older images or images made by a different UID may have a non-writable root.
+The launcher prints the exact `sudo chown "UID:GID" "<mount>"` repair command.
+Apply it while the image is mounted, then relaunch.
 
 An atomic `AI-SHARED/state/wsl-state.lock/` directory records host, distro and
-PID and excludes other sessions across distros. An existing loop attachment
-also blocks launch. Locks are never automatically stolen: a PID missing in
+PID plus a per-session token and excludes other sessions across distros. An existing loop attachment
+also blocks launch. Stale-lock recovery is manual by design. Locks are never automatically stolen: a PID missing in
 one distro does not prove that another distro has stopped. After a crash,
 stop all drive sessions on every host/distro, inspect `losetup -j
 "/mnt/d/state/wsl-state.ext4"` in each distro, and unmount/detach any attachment
 before recovery. After an unclean eject, run `e2fsck -f
 "/mnt/d/state/wsl-state.ext4"` **only while the image is unmounted and detached**.
-Once recovery succeeds, remove the stale lock's `owner` file and lock directory,
-any `wsl-state.partial.*` files, and any leftover empty temporary mountpoint.
+Once recovery succeeds, remove any `image.partial` inside the stale lock, its
+`owner` file and the lock directory, old `wsl-state.partial.*` files, and any
+leftover empty temporary mountpoint.
 Never unplug following a cleanup warning. Real WSL2 testing is still needed
 for udisks availability and loop-image flush behavior over DrvFS/9p.
 

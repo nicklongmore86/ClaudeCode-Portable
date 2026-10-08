@@ -17,7 +17,42 @@ drive_is_wsl() {
 drive_resolve_wsl_cli() {
     # Consume PATH without word splitting or pathname expansion.
     drive_target_cli=$1
-    drive_remaining_path=$PATH:
+    drive_cli_home=${drive_host_home:-$HOME}
+    drive_remaining_path=$PATH:$drive_cli_home/.local/bin:$drive_cli_home/.npm-global/bin:$drive_cli_home/.claude/local:$drive_cli_home/.bun/bin:
+    # Resolve nvm's default alias without sourcing shell startup files or nvm.
+    # Version aliases (v22, 22, node, stable and lts/*) select the newest match.
+    drive_nvm_alias=$(cat "$drive_cli_home/.nvm/alias/default" 2>/dev/null) || drive_nvm_alias=
+    drive_nvm_depth=0
+    while [ -n "$drive_nvm_alias" ] && [ "$drive_nvm_depth" -lt 8 ]; do
+        case $drive_nvm_alias in *..*|/*) drive_nvm_alias=; break;; esac
+        [ -f "$drive_cli_home/.nvm/alias/$drive_nvm_alias" ] || break
+        drive_nvm_alias=$(cat "$drive_cli_home/.nvm/alias/$drive_nvm_alias") || break
+        drive_nvm_depth=$((drive_nvm_depth + 1))
+    done
+    drive_nvm_versions=$(printf '%s\n' "$drive_cli_home"/.nvm/versions/node/*/bin | sort -Vr)
+    drive_nvm_default=
+    while IFS= read -r drive_nvm_bin; do
+        [ -d "$drive_nvm_bin" ] || continue
+        drive_nvm_version=${drive_nvm_bin%/bin}
+        drive_nvm_version=${drive_nvm_version##*/}
+        case $drive_nvm_alias in
+            node|stable) drive_nvm_default=$drive_nvm_bin; break;;
+            '') :;;
+            *) case $drive_nvm_version in
+                "$drive_nvm_alias"|"$drive_nvm_alias".*|v"$drive_nvm_alias"|v"$drive_nvm_alias".*)
+                    drive_nvm_default=$drive_nvm_bin; break;;
+            esac;;
+        esac
+    done <<EOF_NVM
+$drive_nvm_versions
+EOF_NVM
+    drive_remaining_path=$drive_remaining_path${NVM_BIN:-}:$drive_nvm_default:
+    while IFS= read -r drive_nvm_bin; do
+        [ ! -d "$drive_nvm_bin" ] || drive_remaining_path=$drive_remaining_path$drive_nvm_bin:
+    done <<EOF_NVM
+$drive_nvm_versions
+EOF_NVM
+    drive_remaining_path=$drive_remaining_path/usr/local/bin:/usr/bin:
     while [ -n "$drive_remaining_path" ]; do
         drive_dir_entry=${drive_remaining_path%%:*}
         drive_remaining_path=${drive_remaining_path#*:}
@@ -25,7 +60,7 @@ drive_resolve_wsl_cli() {
         drive_check_path=$(realpath -- "$drive_dir_entry/$drive_target_cli" 2>/dev/null) || continue
         if [ ! -f "$drive_check_path" ] || [ ! -x "$drive_check_path" ]; then continue; fi
         case "$drive_check_path" in *.exe|*.cmd|*.bat|/mnt/*) continue;; esac
-        case $(stat -f -c %T -- "$drive_check_path") in 9p|drvfs) continue;; esac
+        case $(stat -f -c %T -- "$drive_check_path") in v9fs|9p|virtiofs|drvfs) continue;; esac
         [ "$(head -c 2 -- "$drive_check_path")" != MZ ] || continue
         printf '%s\n' "$drive_check_path"
         return 0
@@ -41,7 +76,23 @@ drive_decode_mount() {
 
 drive_wsl_lock() {
     DRIVE_WSL_LOCK="$drive_wsl_shared/state/wsl-state.lock"
-    if ! mkdir "$DRIVE_WSL_LOCK" 2>/dev/null; then
+    DRIVE_WSL_TOKEN=$(cat /proc/sys/kernel/random/uuid) || return 1
+    # This short acquisition transaction defers exits until ownership is saved.
+    # The pending signal is replayed after installing the normal traps.
+    trap 'drive_lock_signal=INT' INT
+    trap 'drive_lock_signal=TERM' TERM
+    trap 'drive_lock_signal=HUP' HUP
+    drive_lock_signal=
+    if mkdir "$DRIVE_WSL_LOCK" 2>/dev/null; then
+        DRIVE_WSL_LOCK_HELD=1
+        printf '%s\nhost=%s distro=%s pid=%s\n' "$DRIVE_WSL_TOKEN" "$(hostname)" "${WSL_DISTRO_NAME:-unknown}" "$$" > "$DRIVE_WSL_LOCK/owner"
+        drive_lock_status=$?
+    else
+        drive_lock_status=1
+    fi
+    drive_traps
+    if [ -n "$drive_lock_signal" ]; then kill -s "$drive_lock_signal" "$$"; fi
+    if [ "$drive_lock_status" != 0 ]; then
         # PIDs are namespace-local. Even a dead local PID cannot prove that a
         # different distro/host has stopped using the image. Never steal locks.
         drive_fail "WSL image locked: $DRIVE_WSL_LOCK. Owner: $(cat "$DRIVE_WSL_LOCK/owner" 2>/dev/null).
@@ -50,8 +101,21 @@ verify losetup -j '$drive_wsl_img' is empty everywhere, repair the unmounted ima
 if needed, then remove the lock directory and any wsl-state.partial.* files."
         return 1
     fi
-    DRIVE_WSL_LOCK_HELD=1
-    printf 'host=%s distro=%s pid=%s\n' "$(hostname)" "${WSL_DISTRO_NAME:-unknown}" "$$" > "$DRIVE_WSL_LOCK/owner"
+}
+
+drive_wsl_owns_lock() {
+    [ "${DRIVE_WSL_LOCK_HELD:-0}" = 1 ] &&
+        [ -n "${DRIVE_WSL_TOKEN:-}" ] &&
+        [ "$(head -n 1 -- "$DRIVE_WSL_LOCK/owner" 2>/dev/null)" = "$DRIVE_WSL_TOKEN" ]
+}
+
+drive_wsl_consent() {
+    # Never consume piped CLI input as a sudo consent response.
+    if ! { IFS= read -r drive_wsl_consent </dev/tty; } 2>/dev/null; then
+        drive_fail 'WSL sudo mount requires a controlling terminal (/dev/tty); launch interactively first.'
+        return 1
+    fi
+    case $drive_wsl_consent in y|Y|yes) return 0;; *) drive_fail 'WSL mount cancelled.';; esac
 }
 
 drive_wsl_discover() {
@@ -86,6 +150,7 @@ drive_wsl_discover() {
         case $drive_wsl_number in ''|0*|*[!0-9]*|????????*) drive_fail 'Invalid WSL image size.'; return 1;; esac
         drive_wsl_bytes=$((drive_wsl_number * drive_wsl_units))
         [ "$drive_wsl_bytes" -ge 67108864 ] || { drive_fail 'WSL image must be at least 64M.'; return 1; }
+        # Direct filesystems only: DrvFS reports v9fs/virtiofs, not FAT32.
         drive_wsl_fs=$(stat -f -c %T -- "$drive_wsl_shared/state") || return 1
         case $drive_wsl_fs in
             vfat|msdos) [ "$drive_wsl_bytes" -lt 4294967296 ] || { drive_fail 'FAT32 cannot hold a 4 GiB file; use exFAT or a smaller PORTABLE_AI_WSL_IMAGE_SIZE.'; return 1; };;
@@ -93,7 +158,10 @@ drive_wsl_discover() {
         drive_wsl_free=$(df -Pk "$drive_wsl_shared/state" | awk 'NR==2 {print $4}')
         case $drive_wsl_free in ''|*[!0-9]*) drive_fail 'Cannot determine free space for WSL image.'; return 1;; esac
         [ "$drive_wsl_free" -ge "$((drive_wsl_bytes / 1024))" ] || { drive_fail 'Not enough free space for WSL image.'; return 1; }
-        DRIVE_WSL_PARTIAL=$(mktemp "$drive_wsl_shared/state/wsl-state.partial.XXXXXX") || return 1
+        # The token-owned directory is already unique. Set the partial path
+        # before creating it so a signal cannot lose a mktemp return value.
+        DRIVE_WSL_PARTIAL=$DRIVE_WSL_LOCK/image.partial
+        (umask 077; set -C; : > "$DRIVE_WSL_PARTIAL") || return 1
         printf 'Creating %s drive-resident WSL ext4 image...\n' "$drive_wsl_size" >&2
         truncate -s "$drive_wsl_size" "$DRIVE_WSL_PARTIAL" || { drive_fail 'Image allocation failed (check free space and filesystem file-size limit).'; return 1; }
         mkfs.ext4 -F -q -E "root_owner=$(id -u):$(id -g)" -L AI-WSL-STATE "$DRIVE_WSL_PARTIAL" || return 1
@@ -123,23 +191,22 @@ drive_wsl_discover() {
     fi
     DRIVE_WSL_BACKEND=sudo
     printf 'WSL state requires sudo to attach, mount and later unmount the image. Continue? [y/N] ' >&2
-    IFS= read -r drive_wsl_consent || return 1
-    case $drive_wsl_consent in y|Y|yes) :;; *) drive_fail 'WSL mount cancelled.'; return 1;; esac
+    drive_wsl_consent || return 1
     DRIVE_WSL_TMP_MOUNT=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/ai-drive-wsl.XXXXXX") || return 1
     if [ -L "$DRIVE_WSL_TMP_MOUNT" ] || [ ! -d "$DRIVE_WSL_TMP_MOUNT" ] ||
         [ "$(stat -c %u -- "$DRIVE_WSL_TMP_MOUNT")" != "$(id -u)" ]; then
         drive_fail 'Unsafe WSL mountpoint.'; return 1
     fi
-    DRIVE_WSL_LOOP_DEV=$(sudo losetup --find --show "$drive_wsl_img") || return 1
-    [ -n "$DRIVE_WSL_LOOP_DEV" ] || return 1
     DRIVE_WSL_MOUNT_TARGET=$DRIVE_WSL_TMP_MOUNT
-    sudo mount -t ext4 -o nosuid,nodev "$DRIVE_WSL_LOOP_DEV" "$DRIVE_WSL_MOUNT_TARGET" || return 1
+    DRIVE_WSL_WATCHDOG=1
+    DRIVE_WSL_LOOP_DEV=$(sudo bash "$drive_wsl_shared/launch/lib/wsl-watchdog.sh" acquire "$$" "$drive_wsl_img" "$DRIVE_WSL_MOUNT_TARGET" "$DRIVE_WSL_LOCK" "$DRIVE_WSL_TOKEN") || return 1
+    [ -n "$DRIVE_WSL_LOOP_DEV" ] || return 1
     DRIVE_WSL_MOUNTED=1
     drive_discovered=$DRIVE_WSL_MOUNT_TARGET
 }
 
 drive_wsl_unmount() {
-    [ "${DRIVE_WSL_LOCK_HELD:-0}" = 1 ] || return 0
+    drive_wsl_owns_lock || return 0
     drive_wsl_cleanup_status=0
     if [ "${DRIVE_WSL_ATTACH_ATTEMPT:-0}" = 1 ]; then
         # Recover an attachment whose command was interrupted before assignment.
@@ -151,19 +218,23 @@ drive_wsl_unmount() {
 '*) drive_wsl_cleanup_status=1;; esac
         if [ -n "${DRIVE_WSL_LOOP_DEV:-}" ] && [ "$drive_wsl_cleanup_status" = 0 ]; then
             sync || drive_wsl_cleanup_status=1
+            if [ "$DRIVE_WSL_BACKEND" = sudo ] && [ -z "${drive_cleanup_signal:-}" ]; then
+                # Normal exit refreshes the ticket; signal cleanup never prompts.
+                sudo -v || drive_wsl_cleanup_status=1
+            fi
             # findmnt also catches mounts completed immediately before a signal.
             if [ "${DRIVE_WSL_MOUNTED:-0}" = 1 ] || findmnt -rn -S "$DRIVE_WSL_LOOP_DEV" >/dev/null; then
                 if [ "$DRIVE_WSL_BACKEND" = udisks ]; then
                     udisksctl unmount -b "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
                 else
-                    sudo umount "$DRIVE_WSL_MOUNT_TARGET" || drive_wsl_cleanup_status=1
+                    sudo -n umount "$DRIVE_WSL_MOUNT_TARGET" || drive_wsl_cleanup_status=1
                 fi
             fi
             if [ "$drive_wsl_cleanup_status" = 0 ]; then
                 if [ "$DRIVE_WSL_BACKEND" = udisks ]; then
                     udisksctl loop-delete -b "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
                 else
-                    sudo losetup -d "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
+                    sudo -n losetup -d "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
                 fi
                 # losetup -d may defer deletion while a mount is still busy.
                 drive_wsl_attached=$(losetup -j "$drive_wsl_img") || drive_wsl_cleanup_status=1
@@ -173,14 +244,18 @@ drive_wsl_unmount() {
     fi
     [ -z "${DRIVE_WSL_PARTIAL:-}" ] || rm -f -- "$DRIVE_WSL_PARTIAL" || drive_wsl_cleanup_status=1
     if [ "$drive_wsl_cleanup_status" != 0 ]; then
+        if [ "${DRIVE_WSL_WATCHDOG:-0}" = 1 ]; then
+            printf 'Privileged WSL watchdog will retry teardown after this launcher exits. Keep the drive connected until the session lock disappears.\n' >&2
+        fi
         drive_fail "WSL cleanup failed: do NOT unplug the drive. Lock retained: $DRIVE_WSL_LOCK.
 Check findmnt -S '${DRIVE_WSL_LOOP_DEV:-unknown}' and losetup -j '$drive_wsl_img'.
 Unmount with sudo umount '${DRIVE_WSL_MOUNT_TARGET:-${DRIVE_WSL_LOOP_DEV:-unknown}}', then sudo losetup -d '${DRIVE_WSL_LOOP_DEV:-unknown}'."
         return 1
     fi
     if [ -n "${DRIVE_WSL_TMP_MOUNT:-}" ]; then
-        rmdir -- "$DRIVE_WSL_TMP_MOUNT" || { drive_fail "Cannot remove temporary mountpoint: $DRIVE_WSL_TMP_MOUNT"; return 1; }
+        rmdir -- "$DRIVE_WSL_TMP_MOUNT" 2>/dev/null || printf 'Warning: empty WSL mountpoint remains: %s\n' "$DRIVE_WSL_TMP_MOUNT" >&2
     fi
+    drive_wsl_owns_lock || return 1
     rm -f "$DRIVE_WSL_LOCK/owner" && rmdir "$DRIVE_WSL_LOCK" || return 1
     DRIVE_WSL_LOCK_HELD=0
     unset DRIVE_WSL_LOOP_DEV DRIVE_WSL_MOUNT_TARGET DRIVE_WSL_MOUNTED DRIVE_WSL_ATTACH_ATTEMPT DRIVE_WSL_TMP_MOUNT
@@ -233,6 +308,10 @@ drive_environment() {
     # $1 shared, $2 native, $3 os-arch. No change to the calling user's shell.
     drive_shared=$1 drive_native=$2 drive_bin=$2/bin/$3
     if drive_is_wsl; then
+        if [ ! -w "$drive_native" ]; then
+            drive_fail "WSL image root is not writable by this user. While mounted, repair ownership with: sudo chown \"$(id -u):$(id -g)\" \"$drive_native\""
+            return 1
+        fi
         if [ "${drive_wsl_clis_ready:-0}" != 1 ]; then
             DRIVE_CLAUDE_EXE=$(drive_resolve_wsl_cli claude) || DRIVE_CLAUDE_EXE=
             DRIVE_CODEX_EXE=$(drive_resolve_wsl_cli codex) || DRIVE_CODEX_EXE=

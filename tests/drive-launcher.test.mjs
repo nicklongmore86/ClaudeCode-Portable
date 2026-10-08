@@ -10,10 +10,12 @@ function fixture(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const shared = join(dir, 'AI SHARED'), native = join(dir, 'native space'), mocks = join(dir, 'mock');
   for (const p of [shared, mocks, join(native,'tmp'), join(native, 'bin/linux-x64/codex/bin')]) mkdirSync(p, { recursive: true });
-  const env = { ...process.env, PORTABLE_AI_WSL: '0', PATH: `${mocks}:${process.env.PATH}`, MOCK_NATIVE: native, TMPDIR: join(native,'tmp') };
+  const env = { ...process.env, PORTABLE_AI_WSL: '0', PATH: `${mocks}:${process.env.PATH}`, MOCK_NATIVE: native, MOCK_FIXTURE: dir, TMPDIR: join(native,'tmp') };
   const run = (body, extra = {}) => spawnSync('bash', ['-c', `. ${quote(join(root, 'launch/lib/drive.sh'))}; . ${quote(join(root, 'launch/lib/session.sh'))}; ${body}`], { env, encoding: 'utf8', ...extra });
   const setup = `drive_environment ${quote(shared)} ${quote(native)} linux-x64 || exit;`;
   const mock = (name, body) => writeFileSync(join(mocks, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  // Resolution must never fall through to real host-installed AI CLIs.
+  mock('realpath', 'resolved=$(/usr/bin/realpath "$@") || exit; case $resolved in "$MOCK_FIXTURE"/*) printf "%s\\n" "$resolved";; *) exit 1;; esac');
   // Fail closed: no launcher test may invoke host storage/privilege tools.
   for (const name of ['truncate', 'mkfs.ext4', 'udisksctl', 'sudo', 'mount', 'umount', 'losetup']) {
     mock(name, `echo 'Unexpected storage command: ${name}' >&2; exit 97`);
@@ -206,6 +208,7 @@ test('WSL detection recognizes environment, kernel and override without redefini
 
 test('WSL CLI resolver rejects symlinked Windows shims, PE files and globbed PATH entries', t => {
   const f = fixture(t);
+  f.env.HOME = f.dir;
   const win = join(f.dir, 'windows'), linux = join(f.dir, 'linux');
   mkdirSync(win); mkdirSync(linux);
   writeFileSync(join(win, 'claude.cmd'), '@echo off', { mode: 0o755 });
@@ -222,7 +225,9 @@ test('WSL CLI resolver rejects symlinked Windows shims, PE files and globbed PAT
 
 function wslFixture(t, backend = 'udisks') {
   const f = fixture(t);
-  mkdirSync(join(f.shared, 'launch'));
+  cpSync(join(root, 'launch'), join(f.shared, 'launch'), { recursive: true });
+  f.env.HOME = join(f.dir, 'user-home');
+  mkdirSync(f.env.HOME);
   f.env.PORTABLE_AI_WSL = '1';
   f.env.XDG_RUNTIME_DIR = f.dir;
   f.env.PORTABLE_AI_WSL_IMAGE_SIZE = '128M';
@@ -253,14 +258,14 @@ function wslFixture(t, backend = 'udisks') {
     unmount) rm -f "$WSL_MOUNTED";;
     loop-delete) rm -f "$WSL_ATTACHED";;
     *) exit 97;; esac`);
-  mock('sudo', '"$@"');
+  mock('sudo', '[ \"$1\" != -v ] || exit 0; [ \"$1\" != -n ] || shift; \"$@\"');
   mock('mount', 'printf "%s\\n" "$6" > "$WSL_MOUNTED"');
   // Simulated state files must disappear before rmdir, just as unmount reveals
   // the empty underlying directory. Never invoke the real mount or umount.
   mock('umount', 'rm -rf -- "$1/state" "$1/tmp"; rm -f "$WSL_MOUNTED"');
   mock('claude', 'test -d "$CLAUDE_CONFIG_DIR" && test -d "$CODEX_HOME"; printf "claude-run:%s\\n" "$*"');
   mock('codex', 'printf refreshed > "$CODEX_HOME/auth.json"');
-  f.main = (action = 'exit', extra = {}, prelude = '') => f.run(`${prelude}\ndrive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} ${action}`, extra);
+  f.main = (action = 'exit', extra = {}, prelude = '') => f.run(`drive_wsl_consent() { IFS= read -r answer; [ "$answer" = y ]; }; ${prelude}\ndrive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} ${action}`, extra);
   f.calls = () => existsSync(f.env.WSL_CALLS) ? readFileSync(f.env.WSL_CALLS, 'utf8').trim().split('\n') : [];
   f.lock = join(f.shared, 'state/wsl-state.lock');
   f.image = join(f.shared, 'state/wsl-state.ext4');
@@ -480,3 +485,227 @@ test('WSL concurrent drive_main sessions cannot acquire the same image', async t
   assertClean(f);
   assert.equal(f.calls().filter(e => e.startsWith('udisksctl loop-setup')).length, 1);
 });
+
+for (const location of ['.local/bin', '.npm-global/bin', '.claude/local', '.bun/bin', '.nvm/versions/node/v22.5.0/bin']) {
+  test(`WSL non-interactive discovery searches original HOME/${location}`, t => {
+    const f = wslFixture(t);
+    rmSync(join(f.mocks, 'claude'));
+    const bin = join(f.env.HOME, location);
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\necho user-cli\n', { mode: 0o755 });
+    const r = f.main('claude');
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /user-cli/);
+    assertClean(f);
+  });
+}
+
+test('WSL nvm default alias wins over newest version, active NVM_BIN wins over default', t => {
+  const f = wslFixture(t);
+  rmSync(join(f.mocks, 'claude'));
+  for (const v of ['v20.19.0', 'v22.3.0', 'v22.10.0', 'v24.1.0']) {
+    const bin = join(f.env.HOME, '.nvm/versions/node', v, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'claude'), `#!/bin/sh\necho ${v}\n`, { mode: 0o755 });
+  }
+  mkdirSync(join(f.env.HOME, '.nvm/alias/lts'), { recursive: true });
+  writeFileSync(join(f.env.HOME, '.nvm/alias/default'), 'lts/jod\n');
+  writeFileSync(join(f.env.HOME, '.nvm/alias/lts/jod'), '22\n');
+  let r = f.main('claude');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /v22.10.0/);
+  f.env.NVM_BIN = join(f.env.HOME, '.nvm/versions/node/v20.19.0/bin');
+  r = f.main('claude');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /v20.19.0/);
+});
+
+for (const fs of ['v9fs', '9p', 'virtiofs', 'drvfs']) {
+  test(`WSL rejects ${fs} CLIs outside the default /mnt automount`, t => {
+    const f = wslFixture(t);
+    f.mock('stat', `echo ${fs}`);
+    assert.equal(f.run('drive_resolve_wsl_cli claude').status, 1);
+  });
+}
+
+test('WSL fallback locations still reject resolved Windows shims', t => {
+  const f = wslFixture(t);
+  rmSync(join(f.mocks, 'claude'));
+  const bin = join(f.env.HOME, '.local/bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'claude.cmd'), '@echo off', { mode: 0o755 });
+  symlinkSync(join(bin, 'claude.cmd'), join(bin, 'claude'));
+  const r = f.main('claude');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Linux 'claude' CLI not found/);
+  assertClean(f);
+});
+
+test('drive_main resets all inherited WSL state before early-exit cleanup', t => {
+  const f = wslFixture(t), victim = join(f.dir, 'victim'), partial = join(f.dir, 'partial');
+  mkdirSync(victim); writeFileSync(join(victim, 'owner'), 'injected'); writeFileSync(partial, 'keep');
+  Object.assign(f.env, { DRIVE_WSL_LOCK_HELD: '1', DRIVE_WSL_LOCK: victim, DRIVE_WSL_TOKEN: 'injected', DRIVE_WSL_PARTIAL: partial,
+    DRIVE_WSL_ATTACH_ATTEMPT: '1', DRIVE_WSL_LOOP_DEV: '/dev/loop42', DRIVE_WSL_BACKEND: 'sudo', DRIVE_WSL_TMP_MOUNT: victim,
+    DRIVE_WSL_WATCHDOG: '1', DRIVE_WSL_FUTURE_VAR: 'injected' });
+  const r = f.main('exit', {}, 'drive_discover() { [ -z "${!DRIVE_WSL_@}" ] || exit 99; return 1; };');
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(readFileSync(join(victim, 'owner'), 'utf8'), 'injected');
+  assert.equal(readFileSync(partial, 'utf8'), 'keep');
+  assert.deepEqual(f.calls(), []);
+});
+
+for (const phase of ['mkdir', 'partial']) {
+  test(`WSL signal immediately after ${phase} creation cannot leak token-owned state`, t => {
+    const f = wslFixture(t);
+    if (phase === 'mkdir') {
+      f.mock('mkdir', '/usr/bin/mkdir "$@" || exit; case $1 in */wsl-state.lock) kill -TERM "$LAUNCHER_PID";; esac');
+    }
+    if (phase === 'partial') f.storageMock('truncate', '[ -f "$3" ] || exit 98; kill -TERM "$LAUNCHER_PID"');
+    const prelude = 'export LAUNCHER_PID=$$;';
+    const r = f.main('exit', {}, prelude);
+    assert.equal(r.status, 143, r.stderr);
+    assert.ok(!existsSync(f.lock), r.stderr);
+    assert.ok(!existsSync(f.image));
+  });
+}
+
+test('WSL cleanup refuses to remove a replaced lock token or its partial', t => {
+  const f = wslFixture(t);
+  const r = f.main('exit', {}, 'drive_environment() { printf foreign > "$DRIVE_WSL_LOCK/owner"; printf keep > "$DRIVE_WSL_LOCK/image.partial"; return 1; };');
+  assert.equal(r.status, 1);
+  assert.equal(readFileSync(join(f.lock, 'owner'), 'utf8'), 'foreign');
+  assert.equal(readFileSync(join(f.lock, 'image.partial'), 'utf8'), 'keep');
+  assert.ok(!f.calls().some(e => e.startsWith('udisksctl unmount')));
+});
+
+test('WSL sudo consent fails clearly without a tty and does not consume piped input', t => {
+  const f = wslFixture(t, 'sudo');
+  const r = f.run(`drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} claude`, { input: 'y\nprompt\n' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /requires a controlling terminal/);
+  assert.ok(!f.calls().some(e => e.startsWith('sudo ')));
+  assert.ok(!existsSync(f.lock));
+});
+
+test('WSL non-writable image root prints ownership repair guidance', t => {
+  const f = wslFixture(t);
+  const r = f.main('exit', {}, `
+    [() { if test "$1" = ! && test "$2" = -w && test "$3" = "$MOCK_NATIVE"; then return 0; fi; builtin [ "$@"; }
+  `);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /sudo chown "\d+:\d+" ".*native space"/);
+  assertClean(f);
+});
+
+test('WSL empty mountpoint removal failure warns but releases the lock', t => {
+  const f = wslFixture(t, 'sudo');
+  f.mock('rmdir', 'case $* in *ai-drive-wsl.*) exit 1;; *) exec /usr/bin/rmdir "$@";; esac');
+  const r = f.main('exit', { input: 'y\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /Warning: empty WSL mountpoint remains/);
+  assertClean(f, 'sudo');
+});
+
+async function waitFor(check, message) {
+  for (let i = 0; i < 250; i++) {
+    if (check()) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.fail(message);
+}
+function processRunning(pid) {
+  const r = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  return r.status === 0 && !r.stdout.trim().startsWith('Z');
+}
+for (const scenario of ['normal-expired', 'HUP', 'TERM', 'expired-no-tty']) {
+  test(`WSL privileged watchdog: ${scenario}, no tty or real storage operations`, async t => {
+    const f = wslFixture(t, 'sudo'), watcherPid = join(f.dir, 'watcher-pid');
+    f.storageMock('setsid', `echo $$ > ${quote(watcherPid)}; exec /usr/bin/setsid "$@"`);
+    f.storageMock('sudo', `
+      case $1 in
+        -v) ${scenario === 'expired-no-tty' ? 'exit 1' : 'touch "$WSL_CALLS.refreshed"; exit 0'};;
+        -n) ${scenario === 'normal-expired' ? '[ -f "$WSL_CALLS.refreshed" ] || exit 1; shift; "$@"' : 'exit 1'};;
+        *) "$@";;
+      esac
+    `);
+    const signal = ['HUP', 'TERM'].includes(scenario) ? scenario : null;
+    f.storageMock('claude', signal ? `kill -${signal} "$LAUNCHER_PID"; sleep 0.1` : ':');
+    const r = f.main('claude', { input: 'y\n' }, 'export LAUNCHER_PID=$$;');
+    assert.equal(r.status, signal === 'HUP' ? 1 : signal === 'TERM' ? 1 : scenario === 'expired-no-tty' ? 1 : 0, r.stderr);
+    await waitFor(() => !existsSync(f.lock), 'watchdog failed to release lock after verified teardown');
+    await waitFor(() => existsSync(watcherPid), 'watchdog did not start');
+    const pid = Number(readFileSync(watcherPid, 'utf8'));
+    await waitFor(() => !processRunning(pid), 'watchdog process survived teardown');
+    assertClean(f, 'sudo');
+    if (signal) assert.ok(!f.calls().includes('sudo -v'));
+    else assert.ok(f.calls().includes('sudo -v'));
+    if (scenario !== 'normal-expired') assert.match(r.stderr, /watchdog will retry teardown/);
+  });
+}
+
+test('WSL tty consent preserves piped CLI input through drive_main', t => {
+  const f = wslFixture(t, 'sudo'), input = join(f.dir, 'piped-input');
+  writeFileSync(input, 'my actual prompt\n');
+  f.storageMock('claude', 'IFS= read -r prompt; printf "PRESERVED:%s\\n" "$prompt"');
+  const python = `
+import os, pty, select, signal, time
+pid, fd = pty.fork()
+if pid == 0:
+    source = os.open(${JSON.stringify(input)}, os.O_RDONLY)
+    os.dup2(source, 0)
+    os.execvp('bash', ['bash', ${JSON.stringify(join(f.shared, 'launch/linux.sh'))}, 'claude'])
+output = b''
+status = None
+try:
+    os.write(fd, b'y\\n')
+    end = time.time() + 8
+    while time.time() < end:
+        ready, _, _ = select.select([fd], [], [], 0.1)
+        if ready:
+            try: chunk = os.read(fd, 4096)
+            except OSError: break
+            if not chunk: break
+            output += chunk
+        done, value = os.waitpid(pid, os.WNOHANG)
+        if done:
+            status = value
+            break
+    if status is None: _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0, repr(output)
+    assert b'PRESERVED:my actual prompt' in output, repr(output)
+finally:
+    try: os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    os.close(fd)
+`;
+  const r = spawnSync('python3', ['-c', python], { env: f.env, encoding: 'utf8', timeout: 10000 });
+  assert.equal(r.status, 0, r.stderr);
+  assertClean(f, 'sudo');
+});
+
+for (const failure of ['sync', 'umount', 'detach', 'foreign-token']) {
+  test(`WSL watchdog ${failure} failure retains the lock and exits`, async t => {
+    const f = wslFixture(t, 'sudo'), watcherPid = join(f.dir, 'watcher-pid');
+    f.storageMock('setsid', `echo $$ > ${quote(watcherPid)}; exec /usr/bin/setsid "$@"`);
+    f.storageMock('sudo', `case $1 in
+      -v) exit 1;;
+      -n) ${failure === 'foreign-token' ? `printf foreign > ${quote(join(f.lock, 'owner'))};` : ''} exit 1;;
+      *) "$@";; esac`);
+    if (failure === 'sync' || failure === 'umount') f.storageMock(failure, 'exit 1');
+    if (failure === 'detach') {
+      const path = join(f.mocks, 'losetup');
+      writeFileSync(path, readFileSync(path, 'utf8').replace('-d) rm', '-d) exit 1; rm'));
+    }
+    const r = f.main('exit', { input: 'y\n' });
+    assert.equal(r.status, 1, r.stderr);
+    await waitFor(() => existsSync(watcherPid), 'watchdog did not start');
+    const pid = Number(readFileSync(watcherPid, 'utf8'));
+    await waitFor(() => !processRunning(pid), 'failed watchdog should exit, retaining lock for manual recovery');
+    assert.ok(existsSync(f.lock));
+    assert.ok(existsSync(f.env.WSL_ATTACHED));
+    if (failure === 'foreign-token') {
+      assert.equal(readFileSync(join(f.lock, 'owner'), 'utf8'), 'foreign');
+      assert.ok(!f.calls().some(e => e.startsWith('umount ')));
+    }
+  });
+}

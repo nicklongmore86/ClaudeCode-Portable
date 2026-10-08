@@ -46,7 +46,9 @@ drive_codex_end() {
 drive_finish() {
     drive_exit_status=$?
     trap - EXIT
-    trap '' INT TERM HUP # Finish teardown even if another signal arrives.
+    # Children inherit these ignored signals. Cleanup must finish once begun;
+    # sudo uses non-interactive authentication after HUP/TERM to avoid a prompt.
+    trap '' INT TERM HUP
     drive_cleanup
     drive_codex_end || drive_exit_status=1
     drive_wsl_unmount || drive_exit_status=1
@@ -55,8 +57,9 @@ drive_finish() {
 
 drive_traps() {
     trap drive_finish EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM HUP
+    trap 'drive_cleanup_signal=INT; exit 130' INT
+    trap 'drive_cleanup_signal=TERM; exit 143' TERM
+    trap 'drive_cleanup_signal=HUP; exit 143' HUP
 }
 
 drive_run() {
@@ -136,6 +139,12 @@ drive_login() {
 
 drive_main() {
     set +x # Never trace credentials, including when called with bash -x.
+    # Never trust exported state from the parent process, including paths used
+    # by cleanup. Reset the entire namespace before installing any trap.
+    for drive_state_name in ${!DRIVE_WSL_@}; do unset "$drive_state_name"; done
+    # shellcheck disable=SC2034 # Used by drive_wsl_unmount.
+    drive_cleanup_signal=
+    drive_host_home=$HOME
     drive_traps
     # shellcheck disable=SC2034 # Consumed by drive_environment in drive.sh.
     drive_wsl_clis_ready=0
