@@ -71,11 +71,11 @@ test('failed runtime installation preserves the working copy',async()=>{
 });
 test('verified runtime replacement retains the old copy and rollback restores it',async()=>{
   const target=join(temp,'transaction/current');let installArgs;
-  const writeRuntime=(dir,tag)=>{mkdirSync(join(dir,'node_modules/@anthropic-ai/claude-code/bin'),{recursive:true});writeFileSync(join(dir,'node_modules/@anthropic-ai/claude-code/package.json'),JSON.stringify({bin:{claude:'bin/claude.exe'}}));writeFileSync(join(dir,'node_modules/@anthropic-ai/claude-code/bin/claude.exe'),tag);for(const dep of Object.keys(manifest.dependencies)){if(dep==='@anthropic-ai/claude-code')continue;mkdirSync(join(dir,'node_modules',dep),{recursive:true});writeFileSync(join(dir,'node_modules',dep,'package.json'),JSON.stringify({name:dep}));}};
+  const writeRuntime=(dir,tag)=>{mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'dashboard-version'),tag);for(const dep of Object.keys(manifest.dependencies)){mkdirSync(join(dir,'node_modules',dep),{recursive:true});writeFileSync(join(dir,'node_modules',dep,'package.json'),JSON.stringify({name:dep}));}};
   writeRuntime(target,'old');
   await installRuntime({target,runner:async(cmd,args,options)=>{if(args[0]==='--version')return '2.1.247 (Claude Code)';installArgs=args;writeRuntime(options.cwd,'new');return '';}});
   assert.equal(installArgs[installArgs.indexOf('--no-fund')+1],'--save=false');assert.ok(installArgs.includes('--no-bin-links'));
-  const exe='node_modules/@anthropic-ai/claude-code/bin/claude.exe';assert.equal(readFileSync(join(target,exe),'utf8'),'new');
+  const exe='dashboard-version';assert.equal(readFileSync(join(target,exe),'utf8'),'new');
   await rollbackRuntime({target,runner:async()=> '2.1.247 (Claude Code)'});assert.equal(readFileSync(join(target,exe),'utf8'),'old');
 });
 test('dashboard blocks unauthenticated, cross-origin and rebinding requests',async t=>{

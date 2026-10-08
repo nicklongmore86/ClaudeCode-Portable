@@ -1,2 +1,2 @@
-#!/usr/bin/env bash
-exec bash "$(cd "$(dirname "$0")" && pwd)/start.sh" resume "$@"
+#!/bin/sh
+exec sh "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/start.sh" claude --resume "$@"

@@ -1,2 +1,2 @@
 @echo off
-call "%~dp0START.bat" resume %*
+call "%~dp0START.bat" claude --resume %*
