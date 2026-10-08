@@ -4,6 +4,14 @@
 # Bash job control provides a separate process group on Linux and macOS.
 # Foregrounding preserves interactive terminal input; cleanup covers descendants
 # remaining in the group after the CLI exits, including dashboard children.
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    _session_lib_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P 2>/dev/null) || _session_lib_dir=
+    if [ -n "$_session_lib_dir" ] && [ -f "$_session_lib_dir/omnigent-host.sh" ]; then
+        # shellcheck source=launch/lib/omnigent-host.sh
+        . "$_session_lib_dir/omnigent-host.sh"
+    fi
+    unset _session_lib_dir
+fi
 drive_cleanup() {
     if [ -n "${drive_group_file:-}" ] && [ -f "$drive_group_file" ]; then
         drive_child=$(cat "$drive_group_file")
@@ -93,8 +101,73 @@ drive_codex() {
     return "$drive_codex_status"
 }
 
+drive_omnigent() {
+    case $drive_os in
+        linux|darwin) ;;
+        *)
+            drive_fail "Omnigent Host is currently supported on Linux and macOS only."
+            return 1
+            ;;
+    esac
+
+    if ! command -v drive_omnigent_environment >/dev/null 2>&1; then
+        if [ -n "${drive_entry:-}" ] && [ -f "$(dirname -- "$drive_entry")/lib/omnigent-host.sh" ]; then
+            # shellcheck source=launch/lib/omnigent-host.sh
+            . "$(dirname -- "$drive_entry")/lib/omnigent-host.sh"
+        elif [ -n "${drive_shared:-}" ] && [ -f "$drive_shared/launch/lib/omnigent-host.sh" ]; then
+            # shellcheck source=launch/lib/omnigent-host.sh
+            . "$drive_shared/launch/lib/omnigent-host.sh"
+        else
+            drive_fail "Cannot find omnigent-host.sh library."
+            return 1
+        fi
+    fi
+
+    drive_python="$drive_native/bin/$drive_target/python"
+    drive_omnigent_environment "$drive_native" "$drive_target" || return 1
+
+    drive_server_url=$(drive_omnigent_server_url "$drive_shared" "$@") || return 1
+    drive_omnigent_host_identity "$drive_shared" "$drive_python" "$drive_os" || return 1
+
+    drive_lock || return 1
+    drive_locked=1
+    drive_auth_ready=0
+    drive_traps
+    if ! drive_auth_in || ! drive_codex_config; then
+        drive_codex_end
+        return 1
+    fi
+    drive_auth_ready=1
+
+    drive_filtered_args=()
+    drive_skip=0
+    for drive_arg in "$@"; do
+        if [ "$drive_skip" -eq 1 ]; then
+            drive_skip=0
+            continue
+        fi
+        case "$drive_arg" in
+            --server=*)
+                ;;
+            --server)
+                drive_skip=1
+                ;;
+            http://*|https://*|ws://*|wss://*)
+                ;;
+            *)
+                drive_filtered_args+=("$drive_arg")
+                ;;
+        esac
+    done
+
+    drive_run "$drive_python/bin/python3" -m omnigent.cli host "$drive_server_url" --no-open "${drive_filtered_args[@]}"
+    drive_omnigent_status=$?
+    drive_codex_end || return 1
+    return "$drive_omnigent_status"
+}
+
 drive_login() {
-    printf 'Login: 1 Claude subscription  2 Codex device login  3 Codex browser login\n'
+    printf 'Login: 1 Claude subscription  2 Codex device login  3 Codex browser login  4 Omnigent server URL\n'
     IFS= read -r drive_choice || return 1
     case $drive_choice in
         1)
@@ -129,6 +202,18 @@ drive_login() {
             fi
             drive_codex login
             ;;
+        4)
+            if ! command -v drive_omnigent_setup_server_url >/dev/null 2>&1; then
+                if [ -n "${drive_entry:-}" ] && [ -f "$(dirname -- "$drive_entry")/lib/omnigent-host.sh" ]; then
+                    # shellcheck source=launch/lib/omnigent-host.sh
+                    . "$(dirname -- "$drive_entry")/lib/omnigent-host.sh"
+                elif [ -n "${drive_shared:-}" ] && [ -f "$drive_shared/launch/lib/omnigent-host.sh" ]; then
+                    # shellcheck source=launch/lib/omnigent-host.sh
+                    . "$drive_shared/launch/lib/omnigent-host.sh"
+                fi
+            fi
+            drive_omnigent_setup_server_url "$drive_shared"
+            ;;
         *) drive_fail 'Unknown login option';;
     esac
 }
@@ -146,7 +231,7 @@ drive_main() {
     [ "$#" -eq 0 ] || shift
     while :; do
         if [ "$drive_action" = menu ]; then
-            printf '\n1 Claude Code\n2 Codex\n3 Dashboard\n4 Login setup\n5 Audit\n6 Exit\nChoose: '
+            printf '\n1 Claude Code\n2 Codex\n3 Dashboard\n4 Omnigent Host\n5 Login setup\n6 Audit\n7 Exit\nChoose: '
             IFS= read -r drive_selected || exit 0
         else drive_selected=$drive_action; fi
         case $drive_selected in
@@ -171,8 +256,11 @@ drive_main() {
                     drive_run "$drive_bin/node/bin/node" "$drive_native/tools/dashboard/tools/launcher.mjs" dashboard "$@"
                 fi
                 ;;
-            4|login) drive_login;;
-            5|audit)
+            4|omnigent|omnigent-host|host)
+                drive_omnigent "$@"
+                ;;
+            5|login) drive_login;;
+            6|audit)
                 if [ "$drive_action" = menu ]; then
                     printf 'Audit: 1 Before snapshot  2 After snapshot  3 Diff\n'
                     IFS= read -r drive_audit_choice || return 1
@@ -184,8 +272,8 @@ drive_main() {
                     esac
                 else HOME=$drive_host_home sh "$drive_shared/tools/audit/audit.sh" "$@"; fi
                 ;;
-            6|exit) exit 0;;
-            *) drive_fail 'Choose claude, codex, dashboard, login, audit or exit';;
+            7|exit) exit 0;;
+            *) drive_fail 'Choose claude, codex, dashboard, omnigent, login, audit or exit';;
         esac
         drive_result=$?
         [ "$drive_action" = menu ] || exit "$drive_result"
