@@ -270,7 +270,7 @@ Official references: [Claude release integrity](https://code.claude.com/docs/en/
 
 ## Development checks
 
-Run `npm test` (all `tests/*.test.mjs`, including mocked drive tests and seven Python
+Run `npm test` (all `tests/*.test.mjs`, including mocked drive tests and ten Python
 provisioner test functions), then `npm run check`. Python 3.12+ is needed by the
 provisioner tests. Run `rg --files -g '*.sh' -g '*.command' -0 | xargs -0 shellcheck -x`
 for every shell entry/helper, including upstream scripts. When PowerShell is
