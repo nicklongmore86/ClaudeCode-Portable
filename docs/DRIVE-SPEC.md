@@ -96,7 +96,7 @@ AI-WIN/  AI-MAC/  AI-LINUX/   (same shape on each)
    Use a lock file on `AI-SHARED` to prevent two concurrent sessions.
 6. Preserve the host working directory (the user's project), and pass through
    extra CLI args.
-7. Offer a menu: Claude Code / Codex / Dashboard / Omnigent Host /
+7. Offer a menu: Claude Code / Codex / (build-specific: dashboard or Goose) /
    login setup / audit / exit.
 8. On exit: ensure no child processes remain so the drive can be ejected.
 
@@ -141,7 +141,6 @@ Self-contained, relocatable Omnigent Host agent (`tools/omnigent-host`) connecti
 3. **Interactive Server URL Prompt**: Prompts for server URL on first launch if not configured; saves securely to `AI-SHARED/credentials/omnigent-server-url`.
 4. **Per-Machine Host Identity**: Mints and tracks distinct UUIDs per physical machine in `AI-SHARED/credentials/omnigent-hosts.json`, preventing cross-machine session resumption.
 5. **Zero Host Footprint**: All runtime state, logs, and temp files are confined to drive partitions (`state/`, `tmp/`).
-6. **Launcher Integration & Supervision**: Offered via launcher menu (`launch/linux.sh`, `launch/macos.command`), dedicated CLI action (`omnigent`, `omnigent-host`), and login setup (`Login setup → Omnigent server URL`); managed under the session process supervisor with bounded process-group teardown, credential synchronization, and atomic drive-resident locking.
 
 ## Known, documented limits
 - Gatekeeper / SmartScreen prompts on first run; managed hosts may block.

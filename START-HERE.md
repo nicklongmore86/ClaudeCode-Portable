@@ -221,16 +221,6 @@ for your subscription; configure an API provider separately for the dashboard.
 Its printed localhost URL can be opened manually. Browser state remains on the
 host. Runtime repair belongs on the prep machine, not the target host.
 
-## Omnigent Host (Linux & macOS)
-
-A relocatable, self-contained Omnigent Host agent running on the drive and connecting back to a remote Omnigent server:
-
-- **Launch**: Choose **Omnigent Host** from the launcher menu (`launch/linux.sh`, `launch/macos.command`), run directly via CLI (`./launch/linux.sh omnigent`), or execute the relative wrapper (`AI-SHARED/tools/omnigent-host`).
-- **Server URL**: Prompts interactively on first launch if not configured; saved to `AI-SHARED/credentials/omnigent-server-url` (`0600`). Can be reconfigured via **Login setup → Omnigent server URL** or passed via `--server <url>`.
-- **Per-Machine Identity**: Automatically mints and persists stable host UUIDs per physical machine in `AI-SHARED/credentials/omnigent-hosts.json` (`0600`), preventing accidental cross-machine session resumption.
-- **Zero Host Footprint**: Uses the drive-resident standalone Python 3.12 runtime and pre-installed binary wheels (`tools/omnigent-runtime`). All state, caches, logs, and temp files remain on the drive.
-- **Supervisor & Teardown**: Supervised by the session process manager with signal trapping, process group containment, and automatic Codex credential synchronization.
-
 ## Audit and limits
 
 Take metadata snapshots around a session, writing output to AI-SHARED/logs:

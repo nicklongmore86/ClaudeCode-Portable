@@ -62,43 +62,6 @@ drive_omnigent_server_url() {
     printf '%s\n' "$drive_server_url"
 }
 
-drive_omnigent_setup_server_url() {
-    drive_shared=$1
-    drive_server_file="$drive_shared/credentials/omnigent-server-url"
-    drive_current_url=""
-    if [ -f "$drive_server_file" ]; then
-        drive_current_url=$(tr -d '\r\n' < "$drive_server_file" | xargs)
-    fi
-    if [ -n "$drive_current_url" ]; then
-        printf 'Current Omnigent server URL: %s\n' "$drive_current_url" >&2
-        printf 'Enter new URL (or press Enter to keep current): ' >&2
-    else
-        printf 'Enter Omnigent Server URL (e.g. https://omnigent.example.com): ' >&2
-    fi
-    if IFS= read -r drive_new_url; then
-        drive_new_url=$(printf '%s' "$drive_new_url" | tr -d '\r\n' | xargs)
-        if [ -z "$drive_new_url" ] && [ -n "$drive_current_url" ]; then
-            printf 'Keeping current server URL: %s\n' "$drive_current_url" >&2
-            return 0
-        fi
-        case "$drive_new_url" in
-            http://*|https://*|ws://*|wss://*)
-                mkdir -p "$drive_shared/credentials" || return 1
-                printf '%s\n' "$drive_new_url" > "$drive_server_file.next" || return 1
-                chmod 600 "$drive_server_file.next" 2>/dev/null || :
-                mv -f "$drive_server_file.next" "$drive_server_file" || return 1
-                printf 'Omnigent server URL saved: %s\n' "$drive_new_url" >&2
-                ;;
-            *)
-                drive_fail "Invalid server URL: '$drive_new_url'. Must start with http://, https://, ws://, or wss://"
-                return 1
-                ;;
-        esac
-    else
-        return 1
-    fi
-}
-
 drive_omnigent_machine_key() {
     drive_os=$1
     drive_raw=

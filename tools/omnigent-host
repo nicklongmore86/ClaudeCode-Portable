@@ -34,10 +34,40 @@ esac
 
 drive_native=$(drive_discover "$drive_os" "$drive_shared") || exit 1
 drive_target="$drive_os-$(drive_arch)" || exit 1
-drive_entry="$drive_shared/launch/$drive_os.sh"
 
 # Setup drive environment (HOME, TMPDIR, CODEX_HOME, CLAUDE_CONFIG_DIR, etc.)
 drive_environment "$drive_shared" "$drive_native" "$drive_target" || exit 1
 
-drive_omnigent "$@"
+drive_python="$drive_native/bin/$drive_target/python"
+[ -x "$drive_python/bin/python3" ] || { drive_fail "Portable Python runtime not found at $drive_python. Provision this architecture first."; exit 1; }
+
+# Setup Python, terminfo, certs, and omnigent runtime
+drive_omnigent_environment "$drive_native" "$drive_target" || exit 1
+
+# Resolve server URL and machine identity
+drive_server_url=$(drive_omnigent_server_url "$drive_shared" "$@") || exit 1
+drive_omnigent_host_identity "$drive_shared" "$drive_python" "$drive_os" || exit 1
+
+drive_filtered_args=()
+drive_skip=0
+for drive_arg in "$@"; do
+    if [ "$drive_skip" -eq 1 ]; then
+        drive_skip=0
+        continue
+    fi
+    case "$drive_arg" in
+        --server=*)
+            ;;
+        --server)
+            drive_skip=1
+            ;;
+        http://*|https://*|ws://*|wss://*)
+            ;;
+        *)
+            drive_filtered_args+=("$drive_arg")
+            ;;
+    esac
+done
+
+exec "$drive_python/bin/python3" -m omnigent.cli host "$drive_server_url" --no-open "${drive_filtered_args[@]}"
 
