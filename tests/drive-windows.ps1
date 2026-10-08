@@ -17,7 +17,7 @@ try {
     $before = [Environment]::GetEnvironmentVariables()
     $envMap = Get-DriveEnvironment $shared $native 'win32-x64'
     if ($envMap.CODEX_HOME -ne (Join-Path $native 'state/codex')) { throw 'Wrong CODEX_HOME' }
-    if ($envMap.CLAUDE_CODE_OAUTH_TOKEN -ne "fake-token`r`n`r`n") { throw 'Token not loaded' }
+    if ($envMap.CLAUDE_CODE_OAUTH_TOKEN -ne 'fake-token') { throw 'Token not loaded' }
     foreach ($key in @('ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','OPENAI_API_KEY','ANTHROPIC_BASE_URL','OPENAI_BASE_URL')) {
         if ($envMap.ContainsKey($key)) { throw "Inherited credential: $key" }
     }
