@@ -127,6 +127,17 @@ When `launch/linux.sh` is executed inside WSL2 (auto-detected via `/proc/version
 (home dir dotfiles, `~/.claude*`, `~/.codex`, `~/.config`, `~/.cache`,
 `~/.local`, `%APPDATA%`, `%LOCALAPPDATA%`, `%TEMP%`, `~/Library/...`, system
 temp) before and after a session; print a diff report. Pure sh / PowerShell.
+The Windows script canonicalizes roots, enumerates extended-length local and UNC
+paths, and stores normal paths as `path|length|ticks`. Legacy runtimes that reject
+extended paths retry normal paths with a warning that long paths may be missed.
+Device paths are excluded and counted as unreadable. Unreadable paths are counted
+and warned about (an unreadable directory counts once for its subtree). Missing
+roots and non-admin access to `%SystemRoot%\Temp` can cause expected warnings.
+Nested directory junctions/symlinks are not followed, unlike Windows PowerShell
+5.1's recursive provider; root junctions/symlinks are followed. The script writes
+only the requested snapshot, but PowerShell's own LOCALAPPDATA cache writes may
+appear in diffs. Real Windows PowerShell 5.1 / 7 validation, including hosts with
+long-path support disabled, is still required.
 
 ## Known, documented limits
 - Gatekeeper / SmartScreen prompts on first run; managed hosts may block.
