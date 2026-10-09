@@ -17,10 +17,10 @@ Back up the device. Use a GPT drive with these labels, in this order:
 
 | Label | Format | Suggested capacity | Contents |
 | --- | --- | --- | --- |
-| AI-SHARED | exFAT | 8–16 GB | Launchers, credentials, notes, checksums, audit logs |
-| AI-WIN | NTFS | A third of the remainder | Windows x64/arm64 binaries and state |
-| AI-MAC | APFS | A third of the remainder | macOS arm64/x64 binaries and state |
-| AI-LINUX | ext4 | The remaining space | Linux x64/arm64 binaries and state |
+| AI-SHARED | exFAT | Default 8 GiB; with `--native-size`, all remaining space (minimum 8 GiB) | Launchers, credentials, notes, checksums, audit logs |
+| AI-WIN | NTFS | A third of the remainder; with `--native-size N`, exactly N GiB | Windows x64/arm64 binaries and state |
+| AI-MAC | APFS | A third of the remainder; with `--native-size N`, exactly N GiB | macOS arm64/x64 binaries and state |
+| AI-LINUX | ext4 | The remaining space; with `--native-size N`, exactly N GiB | Linux x64/arm64 binaries and state |
 
 The default helper plan uses 8 GiB for AI-SHARED and splits the rest among
 AI-WIN, AI-MAC and AI-LINUX (the last partition takes the remaining space).
