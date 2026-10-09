@@ -247,8 +247,20 @@ function wslFixture(t, backend = 'udisks') {
   f.env.WSL_ATTACHED = join(f.dir, 'attached');
   f.env.WSL_MOUNTED = join(f.dir, 'mounted');
   f.env.WSL_BACKEND = backend;
+  f.env.WSL_SEQ = join(f.dir, 'diskseq');
+  f.env.WSL_MOUNT_ID = join(f.dir, 'mount-id');
+  writeFileSync(f.env.WSL_SEQ, '100'); writeFileSync(f.env.WSL_MOUNT_ID, '1000');
+  // Mock the block-device fd pin too: tests must never open host loop devices.
+  const identityHelper = join(f.shared, 'launch/lib/wsl-identity.sh');
+  writeFileSync(identityHelper, readFileSync(identityHelper, 'utf8') + '\ndrive_wsl_identity_pin() { drive_wsl_identity_fd=; return 0; }\n');
   f.env.WSL_WATCHERS = join(f.dir, 'watchers');
   const mock = (name, body) => f.mock(name, `printf '%s\\n' '${name}'\" $*\" >> "$WSL_CALLS"\n${name === 'setsid' ? 'echo $$ >> "$WSL_WATCHERS"\n' : ''}${body}`);
+  mock('setpriv', 'shift 3; exec "$@"');
+  mock('cat', `case $1 in
+    /sys/block/loop42/diskseq) [ "\${WSL_NOSEQ:-0}" != 1 ] || exit 1; exec /usr/bin/cat "$WSL_SEQ";;
+    /sys/block/loop42/dev) echo 7:42;;
+    /sys/block/loop42/loop/backing_file) echo "$MOCK_FIXTURE/image";;
+    *) exec /usr/bin/cat "$@";; esac`);
   mock('setsid', 'exec /usr/bin/setsid "$@"');
   mock('sleep', `
     case $(tr '\\0' ' ' < "/proc/$PPID/cmdline") in
@@ -263,12 +275,14 @@ function wslFixture(t, backend = 'udisks') {
   mock('sync', ':');
   mock('findmnt', `
     [ "$3" = /dev/loop42 ] && [ -f "$WSL_MOUNTED" ] || exit 1
+    if [ "$5" = ID,MAJ:MIN,TARGET ]; then printf '%s 7:42 ' "$(cat "$WSL_MOUNT_ID")"; fi
     # Emulate findmnt --raw, including paths containing spaces.
     sed 's/ /\\\\x20/g' "$WSL_MOUNTED"
   `);
   mock('losetup', `case $1 in
     -j) [ ! -f "$WSL_ATTACHED" ] || printf '/dev/loop42: []: (%s)\\n' "$2";;
     --find) touch "$WSL_ATTACHED"; echo /dev/loop42;;
+    -ln) [ ! -f "$WSL_ATTACHED" ] || echo '123 8:1';;
     -d) rm -f "$WSL_ATTACHED";;
     *) exit 97;; esac`);
   mock('udisksctl', `case $1 in
@@ -724,13 +738,13 @@ for (const failure of ['sync', 'umount', 'detach', 'foreign-token']) {
     const pid = Number(readFileSync(watcherPid, 'utf8'));
     await waitFor(() => !processRunning(pid), 'failed watchdog should exit, retaining lock for manual recovery');
     assert.ok(existsSync(f.lock));
-    assert.equal(existsSync(f.env.WSL_ATTACHED), failure !== 'foreign-token');
+    assert.ok(existsSync(f.env.WSL_ATTACHED));
     const logs = readdirSync(join(f.shared, 'state')).filter(n => n.includes('.recovery.'));
-    assert.equal(logs.length, 1);
-    assert.match(readFileSync(join(f.shared, 'state', logs[0]), 'utf8'), /Do NOT unplug/);
+    assert.equal(logs.length, failure === 'foreign-token' ? 0 : 1);
+    if (logs.length) assert.match(readFileSync(join(f.shared, 'state', logs[0]), 'utf8'), /Do NOT unplug/);
     if (failure === 'foreign-token') {
       assert.equal(readFileSync(join(f.lock, 'owner'), 'utf8'), 'foreign');
-      assert.ok(f.calls().includes('umount /dev/loop42'));
+      assert.ok(!f.calls().includes('umount /dev/loop42'));
     } else {
       assert.equal(f.calls().filter(e => e === 'sleep 30').length, 7);
     }
@@ -754,7 +768,8 @@ for (const backend of ['udisks', 'sudo']) {
       const r = f.main('claude', { input: 'y\n' });
       assert.equal(r.status, 1, r.stderr);
       assert.match(r.stderr, /lock token changed or cannot be read/);
-      assert.match(r.stderr, /Do NOT unplug/);
+      assert.match(r.stderr, /image is detached/);
+      assert.ok(!r.stderr.includes('Do NOT unplug'));
       assert.ok(existsSync(f.lock));
       assert.ok(!existsSync(f.env.WSL_ATTACHED));
       assert.ok(!existsSync(f.env.WSL_MOUNTED));
@@ -863,3 +878,122 @@ test('WSL watchdog polls process identity at 1s intervals without reading drive 
     await done;
   }
 });
+
+for (const mode of ['diskseq-foreign-token', 'diskseq-unreadable-token', 'fallback-unreadable-token']) {
+  test(`WSL old watchdog cannot tear down the next session reusing loop42: ${mode}`, async t => {
+    const f = wslFixture(t, 'sudo'), wake = join(f.dir, 'wake-watchers'), ready = join(f.dir, 'session-b-ready'), stop = join(f.dir, 'stop-b');
+    if (mode.startsWith('fallback')) f.env.WSL_NOSEQ = '1';
+    f.storageMock('setsid', `while [ ! -f ${quote(wake)} ]; do /bin/sleep 0.01; done; exec /usr/bin/setsid "$@"`);
+    const path = join(f.mocks, 'losetup');
+    writeFileSync(path, readFileSync(path, 'utf8').replace('--find) touch', '--find) seq=$(cat "$WSL_SEQ"); echo "$((seq + 1))" > "$WSL_SEQ"; mount_id=$(cat "$WSL_MOUNT_ID"); echo "$((mount_id + 1))" > "$WSL_MOUNT_ID"; touch'));
+    const a = f.main('exit', { input: 'y\n' });
+    assert.equal(a.status, 0, a.stderr);
+    await waitFor(() => existsSync(f.env.WSL_WATCHERS), 'A watchdog did not start');
+    const aPid = Number(readFileSync(f.env.WSL_WATCHERS, 'utf8').trim());
+    f.storageMock('claude', `touch ${quote(ready)}; while [ ! -f ${quote(stop)} ]; do /bin/sleep 0.01; done`);
+    const proc = spawn('bash', ['-c', `. ${quote(join(root, 'launch/lib/drive.sh'))}; . ${quote(join(root, 'launch/lib/session.sh'))}; drive_wsl_consent() { return 0; }; drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} claude`], { env: f.env, stdio: 'ignore' });
+    const done = new Promise(resolve => proc.on('exit', code => resolve(code)));
+    try {
+      await waitFor(() => existsSync(ready), 'B CLI did not start');
+      if (mode.includes('unreadable')) f.storageMock('head', 'for arg do last=$arg; done; case $last in */owner) exit 1;; *) exec /usr/bin/head "$@";; esac');
+      const start = f.calls().length;
+      writeFileSync(wake, '');
+      await waitFor(() => !processRunning(aPid), 'A watchdog did not exit');
+      assert.ok(existsSync(f.env.WSL_ATTACHED), 'A detached B');
+      assert.ok(existsSync(f.env.WSL_MOUNTED), 'A unmounted B');
+      assert.ok(existsSync(f.lock), 'A removed B lock');
+      assert.ok(!f.calls().slice(start).some(e => e === 'umount /dev/loop42' || e === 'losetup -d /dev/loop42'));
+      const logs = readdirSync(join(f.shared, 'state')).filter(n => n.includes('.recovery.'));
+      assert.equal(logs.length, mode.includes('unreadable') ? 1 : 0);
+      if (logs.length) assert.match(readFileSync(join(f.shared, 'state', logs[0]), 'utf8'), /identity changed or cannot be verified/);
+      writeFileSync(stop, '');
+      assert.equal(await done, mode.includes('unreadable') ? 1 : 0);
+      assert.ok(!existsSync(f.env.WSL_ATTACHED));
+      assert.ok(!existsSync(f.env.WSL_MOUNTED));
+    } finally {
+      writeFileSync(wake, ''); writeFileSync(stop, '');
+      if (proc.exitCode === null) proc.kill('SIGTERM');
+      await done;
+    }
+  });
+}
+
+for (const backend of ['udisks', 'sudo']) {
+  for (const change of ['diskseq', 'inode']) {
+    test(`WSL launcher refuses ${backend} teardown of changed ${change}`, t => {
+      const f = wslFixture(t, backend);
+      f.env.WSL_IMAGE = f.image;
+      f.storageMock('claude', change === 'diskseq' ? 'echo 999 > "$WSL_SEQ"' : 'mv "$WSL_IMAGE" "$WSL_IMAGE.old"; touch "$WSL_IMAGE"');
+      const r = f.main('claude', { input: 'y\n' });
+      assert.equal(r.status, 1, r.stderr);
+      assert.match(r.stderr, /identity changed or/i);
+      assert.ok(existsSync(f.env.WSL_ATTACHED));
+      assert.ok(existsSync(f.env.WSL_MOUNTED));
+      assert.ok(!f.calls().some(e => e.startsWith('umount ') || e.startsWith('udisksctl unmount') || e.startsWith('losetup -d') || e.startsWith('udisksctl loop-delete')));
+    });
+  }
+}
+
+test('WSL sudo uses pinned mount-ID identity when diskseq is unavailable', t => {
+  const f = wslFixture(t, 'sudo');
+  f.env.WSL_NOSEQ = '1';
+  const r = f.main('claude', { input: 'y\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assertClean(f, 'sudo');
+  assert.ok(f.calls().some(e => e.includes('mount:1000 7:42')));
+});
+
+test('WSL cannot verify either diskseq or mount ID: retains state without destructive actions', t => {
+  const f = wslFixture(t, 'sudo');
+  f.env.WSL_NOSEQ = '1';
+  const path = join(f.mocks, 'findmnt');
+  writeFileSync(path, readFileSync(path, 'utf8').replace('if [ "$5" = ID,MAJ:MIN,TARGET ]; then', 'if [ "$5" = ID,MAJ:MIN,TARGET ]; then exit 1;'));
+  const r = f.main('exit', { input: 'y\n' });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /identity.*refusing teardown/);
+  assert.ok(existsSync(f.lock));
+  assert.ok(!f.calls().some(e => e.startsWith('umount ') || e.startsWith('losetup -d')));
+});
+
+for (const kind of ['fifo', 'device-symlink', 'regular-symlink', 'existing-file']) {
+  test(`WSL recovery logger rejects ${kind} without blocking or following it`, t => {
+    const f = fixture(t), log = join(f.dir, 'recovery.log'), victim = join(f.dir, 'victim');
+    writeFileSync(victim, 'unchanged');
+    if (kind === 'fifo') assert.equal(spawnSync('mkfifo', [log]).status, 0);
+    if (kind === 'device-symlink') symlinkSync('/dev/null', log);
+    if (kind === 'regular-symlink') symlinkSync(victim, log);
+    if (kind === 'existing-file') writeFileSync(log, 'keep');
+    const r = spawnSync('python3', [join(root, 'launch/lib/wsl-recovery-log.py'), log, 'must not write'], { encoding: 'utf8', timeout: 1000 });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /refusing to overwrite/);
+    assert.equal(readFileSync(victim, 'utf8'), 'unchanged');
+    if (kind === 'existing-file') assert.equal(readFileSync(log, 'utf8'), 'keep');
+  });
+}
+
+test('WSL recovery logging drops to invoking UID/GID under a bounded timeout', async t => {
+  const f = wslFixture(t, 'sudo');
+  f.env.SUDO_UID = '1234'; f.env.SUDO_GID = '5678';
+  f.storageMock('sudo', 'case $1 in -v|-n) exit 1;; *) "$@";; esac');
+  f.storageMock('sync', 'exit 1');
+  const r = f.main('exit', { input: 'y\n' });
+  assert.equal(r.status, 1);
+  await waitFor(() => f.calls().some(e => e.startsWith('setpriv ')), 'privilege drop was not invoked');
+  const invocation = f.calls().find(e => e.startsWith('setpriv '));
+  assert.match(invocation, /^setpriv --reuid=1234 --regid=5678 --clear-groups python3 /);
+  await waitFor(() => readdirSync(join(f.shared, 'state')).some(n => n.includes('.recovery.')), 'recovery log missing');
+});
+
+for (const backend of ['udisks', 'sudo']) {
+  test(`WSL ${backend} does not confuse a missing image mapping with an inactive loop`, t => {
+    const f = wslFixture(t, backend), missing = join(f.dir, 'missing');
+    const path = join(f.mocks, 'losetup');
+    writeFileSync(path, readFileSync(path, 'utf8').replace('-j) ', `-j) [ ! -f ${quote(missing)} ] || exit 0; `));
+    f.storageMock('claude', `touch ${quote(missing)}`);
+    const r = f.main('claude', { input: 'y\n' });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /recorded loop is still active or unreadable/);
+    assert.ok(existsSync(f.lock));
+    assert.ok(!f.calls().some(e => e.startsWith('umount ') || e.startsWith('losetup -d')));
+  });
+}

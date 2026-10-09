@@ -127,6 +127,8 @@ drive_wsl_consent() {
 
 drive_wsl_discover() {
     drive_wsl_shared=$1
+    # shellcheck source=launch/lib/wsl-identity.sh
+    . "$drive_wsl_shared/launch/lib/wsl-identity.sh" || return 1
     [ -n "$drive_wsl_shared" ] || { drive_fail 'AI-SHARED path required for WSL state discovery.'; return 1; }
     case $(uname -r) in
         *[Mm]icrosoft*|*WSL*)
@@ -181,9 +183,21 @@ drive_wsl_discover() {
     DRIVE_WSL_ATTACH_ATTEMPT=1
     DRIVE_WSL_BACKEND=udisks
     if command -v udisksctl >/dev/null 2>&1; then
+        # Defer launcher signals until the attachment generation is recorded.
+        drive_wsl_acquire_signal=
+        trap 'drive_wsl_acquire_signal=INT' INT
+        trap 'drive_wsl_acquire_signal=TERM' TERM
+        trap 'drive_wsl_acquire_signal=HUP' HUP
         drive_wsl_uout=$(udisksctl loop-setup -f "$drive_wsl_img")
         DRIVE_WSL_LOOP_DEV=$(printf '%s\n' "$drive_wsl_uout" | sed -n 's/.* as \(\/dev\/loop[0-9]*\)\..*/\1/p')
         if [ -n "$DRIVE_WSL_LOOP_DEV" ]; then
+            DRIVE_WSL_IDENTITY=$(drive_wsl_identity_capture "$drive_wsl_img" "$DRIVE_WSL_LOOP_DEV") || {
+                drive_traps
+                drive_fail 'Cannot verify loop diskseq before udisks mount; attachment retained for manual recovery.'; return 1;
+            }
+            drive_traps
+            [ -z "$drive_wsl_acquire_signal" ] || kill -s "$drive_wsl_acquire_signal" "$$"
+            case $DRIVE_WSL_IDENTITY in diskseq:*) :;; *) drive_fail 'Safe udisks teardown requires diskseq; use the sudo backend for the pinned mount-ID fallback.'; return 1;; esac
             udisksctl mount -b "$DRIVE_WSL_LOOP_DEV" -o nosuid,nodev >&2 || return 1
             DRIVE_WSL_MOUNTED=1
             drive_wsl_target=$(findmnt -rn -S "$DRIVE_WSL_LOOP_DEV" -o TARGET --raw) || return 1
@@ -192,6 +206,8 @@ drive_wsl_discover() {
             DRIVE_WSL_MOUNT_TARGET=$drive_discovered
             return 0
         fi
+        drive_traps
+        [ -z "$drive_wsl_acquire_signal" ] || kill -s "$drive_wsl_acquire_signal" "$$"
         # Do not fall back after an ambiguous/partial udisks attachment.
         drive_wsl_attached=$(losetup -j "$drive_wsl_img") || return 1
         [ -z "$drive_wsl_attached" ] || return 1
@@ -206,9 +222,19 @@ drive_wsl_discover() {
     fi
     DRIVE_WSL_MOUNT_TARGET=$DRIVE_WSL_TMP_MOUNT
     DRIVE_WSL_WATCHDOG=1
-    DRIVE_WSL_LOOP_DEV=$(sudo bash "$drive_wsl_shared/launch/lib/wsl-watchdog.sh" acquire "$$" "$drive_wsl_img" "$DRIVE_WSL_MOUNT_TARGET" "$DRIVE_WSL_LOCK" "$DRIVE_WSL_TOKEN") || return 1
-    [ -n "$DRIVE_WSL_LOOP_DEV" ] || return 1
+    drive_wsl_acquire_signal=
+    trap 'drive_wsl_acquire_signal=INT' INT
+    trap 'drive_wsl_acquire_signal=TERM' TERM
+    trap 'drive_wsl_acquire_signal=HUP' HUP
+    drive_wsl_acquired=$(sudo bash "$drive_wsl_shared/launch/lib/wsl-watchdog.sh" acquire "$$" "$drive_wsl_img" "$DRIVE_WSL_MOUNT_TARGET" "$DRIVE_WSL_LOCK" "$DRIVE_WSL_TOKEN") || { drive_traps; return 1; }
+    DRIVE_WSL_LOOP_DEV=${drive_wsl_acquired%%'
+'*}
+    DRIVE_WSL_IDENTITY=${drive_wsl_acquired#*'
+'}
+    [ -n "$DRIVE_WSL_LOOP_DEV" ] && [ "$DRIVE_WSL_IDENTITY" != "$drive_wsl_acquired" ] || return 1
     DRIVE_WSL_MOUNTED=1
+    drive_traps
+    [ -z "$drive_wsl_acquire_signal" ] || kill -s "$drive_wsl_acquire_signal" "$$"
     drive_discovered=$DRIVE_WSL_MOUNT_TARGET
 }
 
@@ -217,37 +243,37 @@ drive_wsl_unmount() {
     [ "${DRIVE_WSL_LOCK_HELD:-0}" = 1 ] || return 0
     drive_wsl_cleanup_status=0
     if [ "${DRIVE_WSL_ATTACH_ATTEMPT:-0}" = 1 ]; then
-        # Recover an attachment whose command was interrupted before assignment.
-        if [ -z "${DRIVE_WSL_LOOP_DEV:-}" ]; then
-            drive_wsl_attached=$(losetup -j "$drive_wsl_img") || drive_wsl_cleanup_status=1
-            DRIVE_WSL_LOOP_DEV=$(printf '%s\n' "$drive_wsl_attached" | sed -n 's/^\(\/dev\/loop[0-9]*\):.*/\1/p')
+        drive_wsl_attached=$(losetup -j "$drive_wsl_img") || drive_wsl_cleanup_status=1
+        if [ -z "$drive_wsl_attached" ] && [ -n "${DRIVE_WSL_LOOP_DEV:-}" ] &&
+            ! drive_wsl_identity_inactive "$DRIVE_WSL_LOOP_DEV"; then
+            drive_fail 'Image mapping disappeared but the recorded loop is still active or unreadable; refusing to declare teardown complete.'
+            drive_wsl_cleanup_status=1
         fi
-        case ${DRIVE_WSL_LOOP_DEV:-} in *'
-'*) drive_wsl_cleanup_status=1;; esac
-        if [ -n "${DRIVE_WSL_LOOP_DEV:-}" ] && [ "$drive_wsl_cleanup_status" = 0 ]; then
-            sync || drive_wsl_cleanup_status=1
-            if [ "$DRIVE_WSL_BACKEND" = sudo ] && [ -z "${drive_cleanup_signal:-}" ]; then
-                # Normal exit refreshes the ticket; signal cleanup never prompts.
-                sudo -v || drive_wsl_cleanup_status=1
-            fi
-            # findmnt also catches mounts completed immediately before a signal.
-            if [ "${DRIVE_WSL_MOUNTED:-0}" = 1 ] || findmnt -rn -S "$DRIVE_WSL_LOOP_DEV" >/dev/null; then
-                if [ "$DRIVE_WSL_BACKEND" = udisks ]; then
-                    udisksctl unmount -b "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
+        if [ -n "$drive_wsl_attached" ]; then
+            if [ -z "${DRIVE_WSL_LOOP_DEV:-}" ] || [ -z "${DRIVE_WSL_IDENTITY:-}" ]; then
+                drive_fail 'Attachment identity was not recorded; refusing teardown. Keep the drive connected for watchdog/manual recovery.'
+                drive_wsl_cleanup_status=1
+            elif [ "$DRIVE_WSL_BACKEND" = sudo ]; then
+                if [ -z "${drive_cleanup_signal:-}" ]; then sudo -v || drive_wsl_cleanup_status=1; fi
+                sudo -n bash "$drive_wsl_shared/launch/lib/wsl-watchdog.sh" cleanup "$$" "$drive_wsl_img" "$DRIVE_WSL_MOUNT_TARGET" "$DRIVE_WSL_LOCK" "$DRIVE_WSL_TOKEN" "$DRIVE_WSL_LOOP_DEV" '' '' '' "$DRIVE_WSL_IDENTITY" || drive_wsl_cleanup_status=1
+            else
+                sync || drive_wsl_cleanup_status=1
+                if drive_wsl_identity_verify "$drive_wsl_img" "$DRIVE_WSL_LOOP_DEV" "$DRIVE_WSL_IDENTITY"; then
+                    if [ "${DRIVE_WSL_MOUNTED:-0}" = 1 ] || findmnt -rn -S "$DRIVE_WSL_LOOP_DEV" >/dev/null; then
+                        udisksctl unmount -b "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
+                    fi
+                    if [ "$drive_wsl_cleanup_status" = 0 ]; then
+                        if drive_wsl_identity_verify "$drive_wsl_img" "$DRIVE_WSL_LOOP_DEV" "$DRIVE_WSL_IDENTITY"; then
+                            udisksctl loop-delete -b "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
+                        else drive_wsl_cleanup_status=1; fi
+                    fi
                 else
-                    sudo -n umount "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
+                    drive_fail 'Loop attachment identity changed or is unreadable; refusing teardown.'
+                    drive_wsl_cleanup_status=1
                 fi
             fi
-            if [ "$drive_wsl_cleanup_status" = 0 ]; then
-                if [ "$DRIVE_WSL_BACKEND" = udisks ]; then
-                    udisksctl loop-delete -b "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
-                else
-                    sudo -n losetup -d "$DRIVE_WSL_LOOP_DEV" || drive_wsl_cleanup_status=1
-                fi
-                # losetup -d may defer deletion while a mount is still busy.
-                drive_wsl_attached=$(losetup -j "$drive_wsl_img") || drive_wsl_cleanup_status=1
-                [ -z "$drive_wsl_attached" ] || drive_wsl_cleanup_status=1
-            fi
+            drive_wsl_attached=$(losetup -j "$drive_wsl_img") || drive_wsl_cleanup_status=1
+            [ -z "$drive_wsl_attached" ] || drive_wsl_cleanup_status=1
         fi
     fi
     if [ -n "${DRIVE_WSL_PARTIAL:-}" ] && drive_wsl_owns_lock; then
@@ -266,7 +292,7 @@ Unmount with sudo umount '${DRIVE_WSL_MOUNT_TARGET:-${DRIVE_WSL_LOOP_DEV:-unknow
         rmdir -- "$DRIVE_WSL_TMP_MOUNT" 2>/dev/null || printf 'Warning: empty WSL mountpoint remains: %s\n' "$DRIVE_WSL_TMP_MOUNT" >&2
     fi
     if ! drive_wsl_owns_lock; then
-        drive_fail "WSL image teardown completed, but its lock token changed or cannot be read. Lock left untouched: $DRIVE_WSL_LOCK. Do NOT unplug until all sessions are checked and the lock is manually recovered."
+        drive_fail "WSL image teardown completed, but its lock token changed or cannot be read. Lock left untouched: $DRIVE_WSL_LOCK. The image is detached; the lock was left for manual recovery."
         return 1
     fi
     rm -f "$DRIVE_WSL_LOCK/owner" && rmdir "$DRIVE_WSL_LOCK" || return 1

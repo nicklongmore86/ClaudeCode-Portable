@@ -199,22 +199,35 @@ unavailable, the launcher asks on `/dev/tty` before using sudo to attach/mount
 the image. Without a controlling terminal it fails clearly; piped CLI input is
 never consumed as consent. It never falls back to host runtime state.
 
-The sudo invocation attaches the loop, then starts a root-owned, detached
-watchdog with that exact device before mounting. Privileged rollback handles
-signals during attachment. On normal exit the launcher refreshes its sudo ticket (`sudo -v`)
+The sudo invocation records the loop attachment's diskseq generation, backing-file
+inode/device and kernel backing metadata, mounts the image, then passes that
+identity to a detached root watchdog. Privileged rollback handles setup errors.
+Every privileged unmount/detach re-verifies the identity while holding the loop
+device open, preventing its number from being recycled during teardown.
+When diskseq is unavailable, sudo uses the live mount ID plus backing metadata
+and keeps the loop fd open from verification through detach. If the identity
+cannot be verified, cleanup refuses to act and warns. The unprivileged udisks
+path requires diskseq; it fails closed if unavailable because it cannot safely
+pin the loop device for the mount-ID fallback. On normal exit the launcher refreshes its sudo ticket (`sudo -v`)
 and tears down itself. On HUP/TERM it uses `sudo -n` only. If authentication has
 expired or the terminal has closed, the watchdog waits for acquisition and the
 launcher to exit, then syncs, unmounts, detaches and verifies no attachment remains.
-Teardown follows the acquired device, even if the owner token changes or becomes
-unreadable; the token is checked only before releasing the lock. A mismatch leaves
-the lock untouched, warns and returns non-zero after teardown. Both paths unmount
+After the launcher exits, a readable different lock token tells its watchdog
+that another session owns the image; the old watchdog exits without touching it.
+With our token or an unreadable token, it acts only on our verified attachment.
+The launcher also verifies attachment identity before teardown. After successful
+detach, a token mismatch leaves the lock for manual recovery and returns non-zero;
+the message states that the image is detached, without an unplug warning. Both paths unmount
 by loop device and are idempotent. The watchdog polls process identity once per
 second without reading the drive lock each tick. It retries failed teardown up to
 12 times, with 2, 4, 8, 16, then 30-second delays (240 seconds of total backoff).
 It never lazily unmounts a busy image. After exhausted retries or an ownership
 mismatch, it writes recovery instructions to
 `state/wsl-state.ext4.recovery.<session-token>.log` on the drive and exits,
-leaving the lock for manual recovery. The launcher still returns non-zero when
+leaving the lock for manual recovery. The logger runs as the invoking UID/GID,
+refuses existing files, symlinks and special files, uses exclusive/no-follow and
+nonblocking open flags, and has a 5-second timeout with a 1-second kill deadline.
+The sudo backend requires Python 3, `setpriv` and `timeout` for this safe logging. The launcher still returns non-zero when
 its own teardown fails; watchdog recovery happens after the launcher exits. Keep the drive
 connected until the lock disappears; a closed terminal cannot display warnings.
 An empty mountpoint removal failure only warns and does not retain the drive lock.
