@@ -22,6 +22,25 @@ Back up the device. Use a GPT drive with these labels, in this order:
 | AI-MAC | APFS | A third of the remainder | macOS arm64/x64 binaries and state |
 | AI-LINUX | ext4 | The remaining space | Linux x64/arm64 binaries and state |
 
+The default helper plan uses 8 GiB for AI-SHARED and splits the rest among
+AI-WIN, AI-MAC and AI-LINUX (the last partition takes the remaining space).
+Optionally pass `--native-size GIB`, a positive integer GiB, to give each of
+those three OS partitions exactly that size and AI-SHARED all remaining usable
+space. AI-SHARED must be at least 8 GiB or the helper refuses before writing.
+It starts at 1 MiB; sizes are MiB-aligned with room reserved for the backup GPT.
+
+For a 512 GB SSD of exactly 512,110,190,592 bytes, preview with:
+
+```sh
+sh provision/partition-linux.sh --device /dev/sdX --native-size 128 --dry-run
+```
+
+Replace `/dev/sdX` with the deliberately selected prep disk. This gives each OS
+137,438,953,472 bytes (128 GiB) and AI-SHARED 99,791,929,344 bytes
+(92.9384765625 GiB, about 92.9 GiB), excluding alignment/GPT space.
+A larger AI-SHARED is fine for exFAT and shared/persistent state, including the
+default 4 GiB WSL2 ext4 image stored as a file on it.
+
 The helper assigns explicit GPT type GUIDs:
 
 | Partition | GPT type GUID | Attribute bits set by helper |
@@ -350,5 +369,7 @@ available, `pwsh -NoProfile -Command '& ./tests/drive-windows.ps1'` parses all
 PowerShell scripts and checks environment construction, volume discovery and C#
 supervisor compilation. The npm wrapper skips this gate when pwsh is absent.
 On Windows, additionally smoke-test Job Object cleanup and both architectures.
-All automated partition tests use fake devices and `--dry-run`; tests download
-no release binaries and perform no real login or partition operation.
+Automated partition tests use mocked device probes; when `sgdisk` is available,
+they also verify a partition table on a temporary sparse regular file. Tests
+never touch real devices or create mounts/loop devices, download no release
+binaries, and perform no real login.
