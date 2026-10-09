@@ -52,7 +52,10 @@ def plan(device, rows, root_source, native_size=None):
         if type(native_size) is not int or native_size <= 0:
             raise ValueError('--native-size must be a positive integer GiB')
         mib = 1024 ** 2
-        sector = int(disk.get('log-sec', 512))
+        sector = disk.get('log-sec')
+        if not re.fullmatch(r'[0-9]+', str(sector)) or int(sector) <= 0:
+            raise ValueError('Refusing invalid logical sector size (log-sec); expected positive integer bytes')
+        sector = int(sector)
         # Standard GPT: 128 entries of 128 bytes, plus the backup header.
         # The exclusive end is rounded down to MiB so every partition start
         # remains aligned, including on 4Kn disks and fractional-GiB drives.

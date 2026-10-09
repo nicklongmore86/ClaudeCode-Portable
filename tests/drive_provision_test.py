@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import re
+import runpy
 import shutil
 import stat
 import subprocess
@@ -151,6 +152,31 @@ class PartitionTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'positive integer'):
                 self.plan(value)
 
+    def test_invalid_sector_sizes_refused_cleanly(self):
+        message = 'Refusing invalid logical sector size (log-sec); expected positive integer bytes'
+        for label, value in [('null', None), ('missing', None), ('zero', '0'),
+                             ('garbage', 'bad'), ('negative', -512)]:
+            with self.subTest(sector=label):
+                rows = self.rows(sector=value)
+                if label == 'missing':
+                    del rows[0]['log-sec']
+                with self.assertRaises(ValueError) as error:
+                    partition.plan('/dev/mockdrive', rows, '/dev/system1', 128)
+                self.assertEqual(str(error.exception), message)
+                # Exercise the script's refusal handler with every probe mocked.
+                with patch.object(partition.sys, 'argv',
+                                  ['partition-linux.py', '--device', '/dev/mockdrive',
+                                   '--native-size', '128', '--dry-run']), \
+                        patch.object(subprocess, 'check_output', side_effect=[
+                            '/dev/system1', json.dumps({'blockdevices': rows})]), \
+                        patch.object(subprocess, 'run') as run, \
+                        patch.object(partition.sys, 'stdout', io.StringIO()) as output:
+                    with self.assertRaises(SystemExit) as refusal:
+                        runpy.run_path(str(ROOT / 'provision/partition-linux.py'), run_name='__main__')
+                    self.assertEqual(refusal.exception.code, message)
+                    self.assertEqual(output.getvalue(), '')
+                    run.assert_not_called()
+
     def test_invalid_cli_sizes_write_nothing(self):
         for value in ('0', '-1', '1.5', 'abc'):
             with self.subTest(value=value), patch.object(partition.sys, 'argv',
@@ -207,11 +233,18 @@ DRY RUN: no writes and no confirmation requested.
 
     @unittest.skipUnless(shutil.which('sgdisk'), 'sgdisk is not installed')
     def test_sgdisk_sparse_regular_file(self):
-        with tempfile.TemporaryDirectory(prefix='.partition-file-', dir=ROOT) as directory:
+        with tempfile.TemporaryDirectory(prefix='.partition-file-') as directory:
             disk = Path(directory) / 'disk.img'
             with disk.open('xb') as stream:
-                stream.truncate(self.SIZE)
-            self.assertTrue(stat.S_ISREG(disk.stat().st_mode))
+                # Check a small hole first: non-sparse filesystems must never
+                # attempt to allocate the full 512 GB image.
+                for size in (1024 ** 2, self.SIZE):
+                    stream.truncate(size)
+                    metadata = disk.stat()
+                    self.assertTrue(stat.S_ISREG(metadata.st_mode))
+                    blocks = getattr(metadata, 'st_blocks', None)
+                    if blocks is None or blocks * 512 >= metadata.st_size // 100:
+                        self.skipTest('System temp filesystem does not provide verifiable sparse files')
             # Execute ONLY the partition-table command, targeting our new file.
             args = self.plan(128)[1][:-1] + [str(disk)]
             subprocess.run(args, check=True, capture_output=True, text=True)

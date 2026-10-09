@@ -19,7 +19,7 @@ Shared contract for portable AI drive:
 
 | # | Label        | FS    | Size (suggested) | Purpose |
 |---|--------------|-------|------------------|---------|
-| 1 | `AI-SHARED`  | exFAT | 8–16 GB          | Front door. Launchers for every OS, README/START-HERE, `credentials/`, checksums, shared notes. Readable+writable by Windows, macOS, Linux without drivers. |
+| 1 | `AI-SHARED`  | exFAT | Default 8 GiB; with `--native-size`, all remaining space (minimum 8 GiB)          | Front door. Launchers for every OS, README/START-HERE, `credentials/`, checksums, shared notes. Readable+writable by Windows, macOS, Linux without drivers. |
 | 2 | `AI-WIN`     | NTFS  | 30%+ of rest     | Windows binaries (x64 + arm64), Portable Git, Windows state/tmp. |
 | 3 | `AI-MAC`     | APFS  | 30%+ of rest     | macOS binaries (arm64 + x64), macOS state/tmp. |
 | 4 | `AI-LINUX`   | ext4  | 30%+ of rest     | Linux binaries (x64 + arm64, musl where available), Linux state/tmp. |

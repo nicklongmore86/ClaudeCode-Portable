@@ -17,7 +17,7 @@ Back up the device. Use a GPT drive with these labels, in this order:
 
 | Label | Format | Suggested capacity | Contents |
 | --- | --- | --- | --- |
-| AI-SHARED | exFAT | 8–16 GB | Launchers, credentials, notes, checksums, audit logs |
+| AI-SHARED | exFAT | Default 8 GiB; with `--native-size`, all remaining space (minimum 8 GiB) | Launchers, credentials, notes, checksums, audit logs |
 | AI-WIN | NTFS | A third of the remainder | Windows x64/arm64 binaries and state |
 | AI-MAC | APFS | A third of the remainder | macOS arm64/x64 binaries and state |
 | AI-LINUX | ext4 | The remaining space | Linux x64/arm64 binaries and state |
