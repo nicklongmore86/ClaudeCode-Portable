@@ -184,11 +184,73 @@ When running inside WSL2 (e.g. Ubuntu on Windows), execute the Linux launcher di
 ```
 
 The launcher automatically detects the WSL2 environment:
-- **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Windows executables (`.exe` / `.cmd` / `/mnt/*` shims) are strictly ignored.
-- **Drive-resident ext4 state**: To guarantee zero host footprint, runtime state, caches, temp files, and Codex SQLite databases are stored in a 4GB sparse ext4 image on the drive (`AI-SHARED/state/wsl-state.ext4`). The image is auto-created on first run and mounted via unprivileged `udisksctl` or loop mount.
+- **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Discovery works with non-interactive `wsl --exec` launches: it checks PATH, then the original distro home's `~/.local/bin`, `~/.npm-global/bin`, `~/.claude/local`, `~/.bun/bin`, active/default nvm bins (preferring `~/.nvm/alias/default`), remaining nvm versions newest first, `/usr/local/bin` and `/usr/bin`. With nvm's default set to `system`, system directories take priority. Each CLI child prepends its matched install directory to PATH so an `env node` shebang uses that installation's Node, even without a login profile. No startup files are sourced. Windows executables (`.exe` / `.cmd` / `.bat`, `/mnt/*`, DrvFS/9p/virtiofs and PE shims) are rejected after symlink resolution.
+- **Drive-resident ext4 state**: Runtime state, caches, temp files, and Codex SQLite databases are stored in `AI-SHARED/state/wsl-state.ext4`. First run creates and formats a temporary image inside the session lock directory, owned by your Linux UID/GID, then renames it into place. Formatting requires e2fsprogs >= 1.42 for `root_owner`. The default is 4 GiB; set `PORTABLE_AI_WSL_IMAGE_SIZE=2G` (integer `M` or `G`, minimum `64M`) before first run to change it. Existing images are not resized. **exFAT allocates the full size; this is not sparse storage.** Free space is checked first. FAT32 cannot hold the default 4 GiB file: use exFAT or a smaller size. The FAT32 pre-check applies only to directly visible filesystems; DrvFS reports v9fs/virtiofs instead, so allocation errors are handled and the partial file removed.
 - **Shared authoritative credentials**: `claude-oauth-token` and `codex-auth.json` on `AI-SHARED/credentials/` remain authoritative and synchronized across Windows, native Linux, macOS, and WSL2.
-- **Clean teardown**: On exit, the loop image is unmounted and any temporary mountpoint removed, leaving zero files on the WSL host.
+- **Clean teardown**: Every exit runs cleanup: sync, unmount, then detach the loop device. A failure returns a non-zero status and warns **do NOT unplug the drive**; the image lock remains for recovery. A sudo mount uses an owned, private temporary directory under `$XDG_RUNTIME_DIR` (or `/tmp`) with `nosuid,nodev`. It is removed after successful cleanup; a crash or failed unmount can leave this empty host directory behind. Sudo/udisks may also write host logs and sudo timestamps; this mode does not promise zero host files.
 - **Dashboard**: The Node dashboard is scoped to native Windows (`launch/windows.cmd`); inside WSL2, use the CLI options (Claude Code / Codex / Login / Audit).
+
+WSL1 is refused; convert the distro to WSL2 first. Set `PORTABLE_AI_WSL=0`
+to disable detection (for example in a container inheriting WSL variables).
+If `AI-LINUX` is already mounted, the launcher uses that native partition.
+Otherwise it tries `udisksctl` loop setup; this requires a working udisks service
+and authorization policy, which many WSL2 installations lack. If setup is
+unavailable, the launcher asks on `/dev/tty` before using sudo to attach/mount
+the image. Without a controlling terminal it fails clearly; piped CLI input is
+never consumed as consent. It never falls back to host runtime state.
+
+The sudo invocation records the loop attachment's diskseq generation, backing-file
+inode/device and kernel backing metadata, mounts the image, then passes that
+identity to a detached root watchdog. Privileged rollback handles setup errors.
+Every privileged unmount/detach re-verifies the identity while holding the loop
+device open, preventing its number from being recycled during teardown.
+When diskseq is unavailable, sudo uses the live mount ID plus backing metadata
+and keeps the loop fd open from verification through detach. If the identity
+cannot be verified, cleanup refuses to act and warns. The unprivileged udisks
+path requires diskseq; it fails closed if unavailable because it cannot safely
+pin the loop device for the mount-ID fallback. On normal exit the launcher refreshes its sudo ticket (`sudo -v`)
+and tears down itself. On HUP/TERM it uses `sudo -n` only. If authentication has
+expired or the terminal has closed, the watchdog waits for acquisition and the
+launcher to exit, then syncs, unmounts, detaches and verifies no attachment remains.
+After the launcher exits, a readable different lock token tells its watchdog
+that another session owns the image; the old watchdog exits without touching it.
+With our token or an unreadable token, it acts only on our verified attachment.
+The launcher also verifies attachment identity before teardown. After successful
+detach, a token mismatch leaves the lock for manual recovery and returns non-zero;
+the message states that the image is detached, without an unplug warning. Both paths unmount
+by loop device and are idempotent. The watchdog polls process identity once per
+second without reading the drive lock each tick. It retries failed teardown up to
+12 times, with 2, 4, 8, 16, then 30-second delays (240 seconds of total backoff).
+It never lazily unmounts a busy image. After exhausted retries or an ownership
+mismatch, it writes recovery instructions to
+`state/wsl-state.ext4.recovery.<session-token>.log` on the drive and exits,
+leaving the lock for manual recovery. The logger runs as the invoking UID/GID,
+refuses existing files, symlinks and special files, uses exclusive/no-follow and
+nonblocking open flags, and has a 5-second timeout with a 1-second kill deadline.
+The sudo backend requires Python 3, `setpriv` and `timeout` for this safe logging. The launcher still returns non-zero when
+its own teardown fails; watchdog recovery happens after the launcher exits. Keep the drive
+connected until the lock disappears; a closed terminal cannot display warnings.
+An empty mountpoint removal failure only warns and does not retain the drive lock.
+The watchdog cannot survive WSL shutdown, power loss or forced termination of the
+root process; those still require manual recovery.
+
+Older images or images made by a different UID may have a non-writable root.
+The launcher prints the exact `sudo chown "UID:GID" "<mount>"` repair command.
+Apply it while the image is mounted, then relaunch.
+
+An atomic `AI-SHARED/state/wsl-state.lock/` directory records host, distro and
+PID plus a per-session token and excludes other sessions across distros. An existing loop attachment
+also blocks launch. Stale-lock recovery is manual by design. Locks are never automatically stolen: a PID missing in
+one distro does not prove that another distro has stopped. After a crash,
+stop all drive sessions on every host/distro, inspect `losetup -j
+"/mnt/d/state/wsl-state.ext4"` in each distro, and unmount/detach any attachment
+before recovery. After an unclean eject, run `e2fsck -f
+"/mnt/d/state/wsl-state.ext4"` **only while the image is unmounted and detached**.
+Once recovery succeeds, remove any `image.partial` inside the stale lock, its
+`owner` file and the lock directory, old `wsl-state.partial.*` files, and any
+leftover empty temporary mountpoint.
+Never unplug following a cleanup warning. Real WSL2 testing is still needed
+for udisks availability and loop-image flush behavior over DrvFS/9p.
 
 Choose **Login setup → Claude subscription**. The official `claude setup-token`
 performs OAuth and prints a token. Paste it at the hidden prompt; the launcher
