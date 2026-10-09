@@ -58,3 +58,13 @@ drive_wsl_identity_inactive() {
     [ -z "${direct//[[:space:]]/}" ] || return 1
     ! findmnt -rn -S "$1" >/dev/null
 }
+
+# Probe a free loop before udisks creates an attachment. Missing or unreadable
+# sysfs support chooses the privileged, pinned fallback conservatively.
+drive_wsl_diskseq_available() {
+    local device sequence
+    device=$(losetup -f) || return 1
+    case $device in /dev/loop[0-9]*) :;; *) return 1;; esac
+    sequence=$(cat "/sys/block/${device##*/}/diskseq" 2>/dev/null) || return 1
+    case $sequence in ''|*[!0-9]*) return 1;; esac
+}

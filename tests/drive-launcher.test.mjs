@@ -280,6 +280,7 @@ function wslFixture(t, backend = 'udisks') {
     sed 's/ /\\\\x20/g' "$WSL_MOUNTED"
   `);
   mock('losetup', `case $1 in
+    -f) echo /dev/loop42;;
     -j) [ ! -f "$WSL_ATTACHED" ] || printf '/dev/loop42: []: (%s)\\n' "$2";;
     --find) touch "$WSL_ATTACHED"; echo /dev/loop42;;
     -ln) [ ! -f "$WSL_ATTACHED" ] || echo '123 8:1';;
@@ -738,13 +739,13 @@ for (const failure of ['sync', 'umount', 'detach', 'foreign-token']) {
     const pid = Number(readFileSync(watcherPid, 'utf8'));
     await waitFor(() => !processRunning(pid), 'failed watchdog should exit, retaining lock for manual recovery');
     assert.ok(existsSync(f.lock));
-    assert.ok(existsSync(f.env.WSL_ATTACHED));
+    assert.equal(existsSync(f.env.WSL_ATTACHED), failure !== 'foreign-token');
     const logs = readdirSync(join(f.shared, 'state')).filter(n => n.includes('.recovery.'));
-    assert.equal(logs.length, failure === 'foreign-token' ? 0 : 1);
-    if (logs.length) assert.match(readFileSync(join(f.shared, 'state', logs[0]), 'utf8'), /Do NOT unplug/);
+    assert.equal(logs.length, 1);
+    if (logs.length) assert.match(readFileSync(join(f.shared, 'state', logs[0]), 'utf8'), failure === 'foreign-token' ? /image is detached/i : /Do NOT unplug/);
     if (failure === 'foreign-token') {
       assert.equal(readFileSync(join(f.lock, 'owner'), 'utf8'), 'foreign');
-      assert.ok(!f.calls().includes('umount /dev/loop42'));
+      assert.ok(f.calls().includes('umount /dev/loop42'));
     } else {
       assert.equal(f.calls().filter(e => e === 'sleep 30').length, 7);
     }
@@ -943,16 +944,14 @@ test('WSL sudo uses pinned mount-ID identity when diskseq is unavailable', t => 
   assert.ok(f.calls().some(e => e.includes('mount:1000 7:42')));
 });
 
-test('WSL cannot verify either diskseq or mount ID: retains state without destructive actions', t => {
+test('WSL acquisition without diskseq or mount ID rolls back through its own pin', t => {
   const f = wslFixture(t, 'sudo');
   f.env.WSL_NOSEQ = '1';
   const path = join(f.mocks, 'findmnt');
   writeFileSync(path, readFileSync(path, 'utf8').replace('if [ "$5" = ID,MAJ:MIN,TARGET ]; then', 'if [ "$5" = ID,MAJ:MIN,TARGET ]; then exit 1;'));
   const r = f.main('exit', { input: 'y\n' });
   assert.equal(r.status, 1, r.stderr);
-  assert.match(r.stderr, /identity.*refusing teardown/);
-  assert.ok(existsSync(f.lock));
-  assert.ok(!f.calls().some(e => e.startsWith('umount ') || e.startsWith('losetup -d')));
+  assertClean(f, 'sudo');
 });
 
 for (const kind of ['fifo', 'device-symlink', 'regular-symlink', 'existing-file']) {
@@ -997,3 +996,74 @@ for (const backend of ['udisks', 'sudo']) {
     assert.ok(!f.calls().some(e => e.startsWith('umount ') || e.startsWith('losetup -d')));
   });
 }
+
+// PR #8 final-review regressions: every storage operation uses fixture mocks.
+test('mn-1 normal sudo cleanup does not warn about an already removed mountpoint', t => {
+  const f = wslFixture(t, 'sudo');
+  const r = f.main('exit', { input: 'y\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /empty WSL mountpoint remains/);
+  assertClean(f, 'sudo');
+});
+
+test('mn-2 no diskseq signal during mount rolls back the acquired device', t => {
+  const f = wslFixture(t, 'sudo');
+  f.env.WSL_NOSEQ = '1';
+  const helper = join(f.shared, 'launch/lib/wsl-identity.sh');
+  writeFileSync(helper, readFileSync(helper, 'utf8') + `
+drive_wsl_identity_pin() { echo pin >> "$WSL_CALLS"; }
+drive_wsl_identity_close() { echo close >> "$WSL_CALLS"; }
+`);
+  f.storageMock('mount', 'printf "%s\\n" "$6" > "$WSL_MOUNTED"; kill -TERM "$PPID"');
+  const r = f.main('exit', { input: 'y\n' });
+  assert.equal(r.status, 1, r.stderr);
+  assertClean(f, 'sudo');
+  assert.ok(!existsSync(f.env.WSL_WATCHERS));
+  const calls = f.calls();
+  assert.ok(calls.indexOf('pin') < calls.findIndex(e => e.startsWith('mount ')));
+  assert.ok(calls.indexOf('losetup -d /dev/loop42') < calls.indexOf('close'));
+});
+
+test('mn-3 no diskseq chooses sudo before any udisks attachment', t => {
+  const f = wslFixture(t);
+  f.env.WSL_NOSEQ = '1';
+  const r = f.main('exit', { input: 'y\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!f.calls().some(e => e.startsWith('udisksctl loop-setup')));
+  assertClean(f, 'sudo');
+});
+
+for (const dependency of ['python3', 'setpriv', 'timeout']) {
+  test(`mn-4 sudo works without logging dependency ${dependency} and prints recovery advice`, t => {
+    const f = wslFixture(t, 'sudo');
+    const helper = join(f.shared, 'launch/lib/wsl-watchdog.sh');
+    // Simulate command lookup on a minimal distro without changing host PATH.
+    writeFileSync(helper, readFileSync(helper, 'utf8').replace('set -u', `set -u\ncommand() { if [ "$1" = -v ] && [ "$2" = ${dependency} ]; then return 1; fi; builtin command "$@"; }`));
+    const r = f.main('exit', { input: 'y\n' });
+    assert.equal(r.status, 0, r.stderr);
+    assertClean(f, 'sudo');
+    // Source functions without executing a mode, then exercise the fallback.
+    const functions = join(f.shared, 'launch/lib/watchdog-functions.sh');
+    writeFileSync(functions, readFileSync(helper, 'utf8').split('case $mode in')[0]);
+    const result = spawnSync('bash', ['-c', `set -- unused 0 image target lock token; source ${quote(functions)}; recovery_log 'Recovery required'`], { env: f.env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Do NOT unplug/);
+    assert.match(result.stderr, /Inspect findmnt/);
+    assert.ok(!f.calls().some(e => e.startsWith('setpriv ')));
+  });
+}
+
+test('mn-5 changed token and launcher crash detach proven device but retain foreign lock', async t => {
+  const f = wslFixture(t, 'sudo');
+  f.storageMock('claude', `printf foreign > ${quote(join(f.lock, 'owner'))}; kill -KILL "$LAUNCHER_PID"`);
+  const r = f.main('claude', { input: 'y\n' }, 'export LAUNCHER_PID=$$;');
+  assert.equal(r.signal, 'SIGKILL');
+  await waitFor(() => existsSync(f.env.WSL_WATCHERS), 'watchdog did not start');
+  await waitFor(() => !processRunning(Number(readFileSync(f.env.WSL_WATCHERS, 'utf8').trim())), 'watchdog did not exit');
+  assert.ok(!existsSync(f.env.WSL_ATTACHED));
+  assert.ok(!existsSync(f.env.WSL_MOUNTED));
+  assert.equal(readFileSync(join(f.lock, 'owner'), 'utf8'), 'foreign');
+  const logs = readdirSync(join(f.shared, 'state')).filter(n => n.includes('.recovery.'));
+  assert.equal(logs.length, 1);
+  assert.match(readFileSync(join(f.shared, 'state', logs[0]), 'utf8'), /image is detached/i);
+});

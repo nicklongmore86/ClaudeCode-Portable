@@ -182,7 +182,7 @@ drive_wsl_discover() {
     # after the kernel attaches/mounts but before command substitution returns.
     DRIVE_WSL_ATTACH_ATTEMPT=1
     DRIVE_WSL_BACKEND=udisks
-    if command -v udisksctl >/dev/null 2>&1; then
+    if command -v udisksctl >/dev/null 2>&1 && drive_wsl_diskseq_available; then
         # Defer launcher signals until the attachment generation is recorded.
         drive_wsl_acquire_signal=
         trap 'drive_wsl_acquire_signal=INT' INT
@@ -289,7 +289,7 @@ Unmount with sudo umount '${DRIVE_WSL_MOUNT_TARGET:-${DRIVE_WSL_LOOP_DEV:-unknow
         return 1
     fi
     if [ -n "${DRIVE_WSL_TMP_MOUNT:-}" ]; then
-        rmdir -- "$DRIVE_WSL_TMP_MOUNT" 2>/dev/null || printf 'Warning: empty WSL mountpoint remains: %s\n' "$DRIVE_WSL_TMP_MOUNT" >&2
+        [ ! -d "$DRIVE_WSL_TMP_MOUNT" ] || rmdir -- "$DRIVE_WSL_TMP_MOUNT" 2>/dev/null || printf 'Warning: empty WSL mountpoint remains: %s\n' "$DRIVE_WSL_TMP_MOUNT" >&2
     fi
     if ! drive_wsl_owns_lock; then
         drive_fail "WSL image teardown completed, but its lock token changed or cannot be read. Lock left untouched: $DRIVE_WSL_LOCK. The image is detached; the lock was left for manual recovery."
