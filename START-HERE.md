@@ -177,7 +177,47 @@ CODEX_HOME and CODEX_SQLITE_HOME are under `state/codex`, never shared exFAT or 
 
 ### WSL2 Mode (Linux in Windows Subsystem for Linux)
 
-When running inside WSL2 (e.g. Ubuntu on Windows), execute the Linux launcher directly:
+From Windows, open `AI-SHARED\launch\windows.cmd` and choose **7 WSL mode**,
+or run from your project's Command Prompt (replace `S:` with AI-SHARED):
+
+```bat
+S:\launch\windows.cmd wsl
+S:\launch\windows.cmd wsl codex exec "explain this repo"
+set "PORTABLE_AI_WSL_DISTRO=Ubuntu"
+S:\launch\windows.cmd wsl claude
+```
+
+WSL2 and at least one distro must already be prepared by the host owner. The
+launcher uses the default distro, or `PORTABLE_AI_WSL_DISTRO` when set in the
+current terminal (`$env:PORTABLE_AI_WSL_DISTRO='Ubuntu'` in PowerShell). With one
+distro it uses that distro; with several and no default it asks you to choose.
+Use `wsl.exe -l -v` to inspect existing distros. Missing WSL/distros fail with
+guidance. The Windows bridge itself does not install WSL, change its default,
+edit host configuration, or create files on Windows or in the distro. Starting
+WSL and running the Linux launcher can leave host traces; see the WSL limits
+under **Audit and limits** below. WSL1 distros are refused without conversion.
+
+The Windows entrypoint runs the sibling `AI-SHARED/launch/linux.sh`, translating
+both its path and your current project directory through that distro's `wslpath`.
+Both locations must be accessible in WSL; the bridge checks that `linux.sh` exists
+inside the distro before launching it. If a newly attached drive is missing,
+attach it before starting WSL or ask the host owner to mount it with drvfs.
+With the host owner's agreement, `wsl --shutdown` followed by a retry can refresh
+drive visibility, but **shutdown stops all running distros and their work**.
+Before starting any `wsl.exe` process, the bridge reads the current user's distro
+registrations under `HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss`.
+No registrations, or an unreadable registry, means guidance and an error without
+invoking WSL. This check never writes the registry. Subsequent helper calls use
+`CreateNoWindow` and closed redirected stdin; this is designed to prevent console
+or stdin keypresses from accepting an install offer. This behavior still requires
+validation on a host without WSL. Helpers display a starting message and time out after 60 seconds
+(plus bounded cleanup); errors include captured WSL diagnostics. The interactive
+session has no timeout. Arguments and the direct action's exit
+code pass through; prompts remain interactive. This entrypoint needs no AI-WIN
+binaries or supervisor DLL. Native Windows options still use AI-WIN as before.
+Real Windows validation of this entrypoint is still required.
+
+When already inside WSL2 (e.g. Ubuntu on Windows), you can still execute the Linux launcher directly:
 
 ```sh
 /mnt/d/launch/linux.sh          # replace 'd' with your AI-SHARED drive letter
@@ -185,12 +225,12 @@ When running inside WSL2 (e.g. Ubuntu on Windows), execute the Linux launcher di
 
 The launcher automatically detects the WSL2 environment:
 - **Official Linux CLIs**: Uses the official Linux `claude` and `codex` CLIs installed in your WSL environment (e.g. via `npm install -g @anthropic-ai/claude-code`). Discovery works with non-interactive `wsl --exec` launches: it checks PATH, then the original distro home's `~/.local/bin`, `~/.npm-global/bin`, `~/.claude/local`, `~/.bun/bin`, active/default nvm bins (preferring `~/.nvm/alias/default`), remaining nvm versions newest first, `/usr/local/bin` and `/usr/bin`. With nvm's default set to `system`, system directories take priority. Each CLI child prepends its matched install directory to PATH so an `env node` shebang uses that installation's Node, even without a login profile. No startup files are sourced. Windows executables (`.exe` / `.cmd` / `.bat`, `/mnt/*`, DrvFS/9p/virtiofs and PE shims) are rejected after symlink resolution.
-- **Drive-resident ext4 state**: Runtime state, caches, temp files, and Codex SQLite databases are stored in `AI-SHARED/state/wsl-state.ext4`. First run creates and formats a temporary image inside the session lock directory, owned by your Linux UID/GID, then renames it into place. Formatting requires e2fsprogs >= 1.42 for `root_owner`. The default is 4 GiB; set `PORTABLE_AI_WSL_IMAGE_SIZE=2G` (integer `M` or `G`, minimum `64M`) before first run to change it. Existing images are not resized. **exFAT allocates the full size; this is not sparse storage.** Free space is checked first. FAT32 cannot hold the default 4 GiB file: use exFAT or a smaller size. The FAT32 pre-check applies only to directly visible filesystems; DrvFS reports v9fs/virtiofs instead, so allocation errors are handled and the partial file removed.
+- **Drive-resident ext4 state**: Runtime state, caches, temp files, and Codex SQLite databases are stored in `AI-SHARED/state/wsl-state.ext4`. First run creates and formats a temporary image inside the session lock directory, owned by your Linux UID/GID, then renames it into place. Formatting requires e2fsprogs >= 1.42 for `root_owner`. The default is 4 GiB; set `PORTABLE_AI_WSL_IMAGE_SIZE=2G` inside the distro (integer `M` or `G`, minimum `64M`) before first run to change it. Existing images are not resized. **exFAT allocates the full size; this is not sparse storage.** Free space is checked first. FAT32 cannot hold the default 4 GiB file: use exFAT or a smaller size. The FAT32 pre-check applies only to directly visible filesystems; DrvFS reports v9fs/virtiofs instead, so allocation errors are handled and the partial file removed.
 - **Shared authoritative credentials**: `claude-oauth-token` and `codex-auth.json` on `AI-SHARED/credentials/` remain authoritative and synchronized across Windows, native Linux, macOS, and WSL2.
-- **Clean teardown**: Every exit runs cleanup: sync, unmount, then detach the loop device. A failure returns a non-zero status and warns **do NOT unplug the drive**; the image lock remains for recovery. A sudo mount uses an owned, private temporary directory under `$XDG_RUNTIME_DIR` (or `/tmp`) with `nosuid,nodev`. It is removed after successful cleanup; a crash or failed unmount can leave this empty host directory behind. Sudo/udisks may also write host logs and sudo timestamps; this mode does not promise zero host files.
+- **Clean teardown**: Every exit runs cleanup: sync, unmount, then detach the loop device. A failure returns a non-zero status and warns **do NOT unplug the drive**; the image lock remains for recovery. A sudo mount uses an owned, private `mktemp -d` temporary directory under `$XDG_RUNTIME_DIR` (or `/tmp`) with `nosuid,nodev`. It is removed after successful cleanup; a crash or failed unmount can leave this empty host directory behind. Sudo/udisks may also write host logs and sudo timestamps; this mode does not promise zero host files.
 - **Dashboard**: The Node dashboard is scoped to native Windows (`launch/windows.cmd`); inside WSL2, use the CLI options (Claude Code / Codex / Login / Audit).
 
-WSL1 is refused; convert the distro to WSL2 first. Set `PORTABLE_AI_WSL=0`
+WSL1 is refused; select a WSL2 distro or ask the host owner to prepare one. Set `PORTABLE_AI_WSL=0`
 to disable detection (for example in a container inheriting WSL variables).
 If `AI-LINUX` is already mounted, the launcher uses that native partition.
 Otherwise it tries `udisksctl` loop setup; this requires a working udisks service
@@ -198,6 +238,9 @@ and authorization policy, which many WSL2 installations lack. If setup is
 unavailable, the launcher asks on `/dev/tty` before using sudo to attach/mount
 the image. Without a controlling terminal it fails clearly; piped CLI input is
 never consumed as consent. It never falls back to host runtime state.
+Linux settings such as `PORTABLE_AI_WSL_IMAGE_SIZE` and `PORTABLE_AI_WSL`
+must be set inside the distro for direct Linux launches; the Windows bridge
+does not forward these Windows environment variables or source shell profiles.
 
 The sudo invocation records the loop attachment's diskseq generation, backing-file
 inode/device and kernel backing metadata, mounts the image, then passes that
@@ -323,6 +366,10 @@ drive output and are removed on success, failure or a handled signal. Optional
 - Linux `noexec` mounts block binaries. Try `udisksctl mount -b /dev/disk/by-label/AI-LINUX`.
   If already mounted noexec, ask the host owner to remount that volume with exec;
   the launcher never elevates or changes mount policy itself.
+- Starting WSL2 can create `swap.vhdx` in `%TEMP%`, write WSL logs, and grow the
+  distro VHDX. Linux mounting and recovery can also leave the temporary
+  mountpoint and sudo/udisks traces described in the WSL2 section above.
+  Drive-resident application state does not imply zero host traces.
 - Login browsers, OS services, shell history, security software and project tools
   may leave host traces. Full host access means intentional project writes occur.
 - An untrusted host can read all attached credentials. Protect the physical drive,
@@ -352,3 +399,32 @@ supervisor compilation. The npm wrapper skips this gate when pwsh is absent.
 On Windows, additionally smoke-test Job Object cleanup and both architectures.
 All automated partition tests use fake devices and `--dry-run`; tests download
 no release binaries and perform no real login or partition operation.
+
+### Windows WSL validation checklist (required before merge)
+
+Run on real Windows with **Windows PowerShell 5.1** (used by `windows.cmd`) and
+**pwsh 7.4+**. Run `powershell.exe -NoProfile -File tests/drive-wsl.ps1` and
+`pwsh -NoProfile -File tests/drive-wsl.ps1` with Node available, then check:
+
+- Default, `PORTABLE_AI_WSL_DISTRO` override, sole distro, and multiple distros
+  without a default; also a WSL1 default and WSL1 override (both must refuse).
+- A host without WSL (including the inbox install stub), and WSL with no distros:
+  verify no `wsl.exe` process is started when registrations are absent. Check
+  unreadable registrations and stale registrations too; helper calls should have
+  no console and stdin EOF, with no accepted install offer. Kernel-update and
+  VM-platform failures should show the WSL diagnostics.
+- A drive attached after the VM started; the bridge must report an unreachable
+  launcher with recovery guidance. Check 32-bit PowerShell's Sysnative fallback.
+- Paths with spaces, non-ASCII characters and `'&;$()`, deliberate empty
+  arguments, and a bare `windows.cmd wsl` (no extra empty argument).
+- `windows.cmd wsl codex exec "a \"q\" b"` and failing `wsl audit`: check the
+  arguments received and `%ERRORLEVEL%` (or `$LASTEXITCODE` in PowerShell).
+- Interactive login and Ctrl+C mid-session, then exit: does the menu return and
+  is the exit code kept? Also verify that session cleanup has finished.
+- Every native menu action with and without AI-WIN mounted. Native initialization
+  failures now return to the menu; direct actions still exit non-zero. Exit and
+  WSL selections must work without initializing AI-WIN.
+
+The pre-existing `powershell -File` argument-binding limits still apply to both
+native and WSL actions: `-c` may bind to `-CliArgs`, a literal `--` is swallowed,
+and cmd expands `%VAR%`. These are not repaired by the WSL bridge.

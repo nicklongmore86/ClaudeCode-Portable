@@ -95,16 +95,64 @@ AI-WIN/  AI-MAC/  AI-LINUX/   (same shape on each)
 8. On exit: ensure no child processes remain so the drive can be ejected.
 
 ## WSL2 Mode (Linux launcher inside WSL)
+
+Windows entry: choose **7 WSL mode** in `AI-SHARED/launch/windows.cmd`, or run
+`S:\launch\windows.cmd wsl [linux-launcher-action] [args...]` (actual AI-SHARED
+letter). All launchers are siblings on AI-SHARED; AI-WIN is only needed for the
+native Windows actions. WSL selection occurs before native Windows initialization.
+
+The entrypoint requires an existing `wsl.exe` and installed distro, decodes WSL
+list output as UTF-16LE, and selects `PORTABLE_AI_WSL_DISTRO` when supplied,
+otherwise the marked default. A sole distro is selected automatically; multiple
+distros without a default require a numbered choice. An invalid override or
+missing WSL/distro fails non-zero with preparation guidance. The host owner must
+already have prepared WSL2 and the Linux CLI/mount prerequisites described below.
+The selected distro's version is checked in the verbose list; WSL1 and unknown
+versions fail before starting Linux commands. Under 32-bit PowerShell, discovery
+falls back to `%WINDIR%/Sysnative/wsl.exe`.
+
+Paths come from the launcher's own directory and the current project directory,
+never assumed drive letters or `/mnt` paths. Each is translated with
+`wsl.exe -d <distro> --exec wslpath -a <Windows-path>`, then the launcher starts
+`wsl.exe -d <distro> --cd <project-dir> --exec bash <linux.sh> <args...>` with
+inherited console handles. Explicit `--exec` bypasses the distro's default shell;
+arguments (including spaces/quotes) are passed as data. The direct action forwards
+the Linux exit status. Translation failure or a failed `test -f <linux.sh>`
+inside the distro stops launch with captured diagnostics and drive-visibility
+guidance. A suggested `wsl --shutdown` recovery requires the host owner's
+agreement because it stops all running distros and their work.
+
+Before invoking `wsl.exe`, the bridge reads distro registrations under
+`HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss`. A missing/empty
+registration set or a registry read failure stops launch with guidance and no
+`wsl.exe` invocation. Registry access is read only. Registration presence does
+not prove that WSL is functional; subsequent helper diagnostics remain necessary.
+Discovery/translation/reachability helpers use `CreateNoWindow`, redirect stdin,
+and immediately close it. These measures are designed to prevent installation
+offers from accepting keyboard input; behavior on a host without WSL still needs
+real Windows validation, including stale-registration scenarios.
+Helpers show a starting message and have a 60-second process timeout with bounded
+cleanup. Captured stdout/stderr are included in errors; UTF-16LE WSL diagnostics
+and UTF-8 Linux output are decoded separately. The interactive session inherits
+the console and has no timeout.
+
+The Windows bridge itself performs no installation, default changes, registry or
+`.wslconfig` edits, or file writes on Windows/in the distro. Existing Linux
+state/credential handling remains unchanged. OS-managed WSL activity remains
+subject to the host-trace limits below. Real Windows testing of distro selection,
+path/argument forwarding, interactive login and exit status remains required;
+Linux CI static checks and skip-guarded PowerShell tests do not establish it.
+
 When `launch/linux.sh` is executed inside WSL2 (auto-detected via `/proc/version` or `WSL_DISTRO_NAME`):
 1. **Host CLIs**: Uses the official Linux `claude` and `codex` CLIs installed inside the WSL2 Linux environment (rejecting any Windows `.exe` / `.cmd` / `/mnt/*` shims).
-2. **Drive-resident state**: Rather than writing state to the host WSL rootfs, the launcher maintains all runtime state, caches, temp files, and Codex SQLite databases inside a drive-resident ext4 image (`AI-SHARED/state/wsl-state.ext4`).
+2. **Drive-resident state**: Rather than writing state to the host WSL rootfs, the launcher maintains all runtime state, caches, temp files, and Codex SQLite databases on an already-mounted `AI-LINUX` partition or, otherwise, inside a drive-resident ext4 image (`AI-SHARED/state/wsl-state.ext4`).
 3. **Mounting**: Prefer an already-mounted `AI-LINUX` partition. Otherwise hold an atomic drive-resident `state/wsl-state.lock` (host/distro/PID and per-session token owner) and reject any `losetup -j` attachment before mounting the image. Reset all inherited `DRIVE_WSL_*` state before installing traps. Defer lock-acquisition signals until the owner token is recorded. Teardown uses recorded attachment identity. A foreign token ends an old watchdog session; unreadable tokens never bypass identity verification. Lock/partial removal requires a matching token. Use `udisksctl` when available, or ask via `/dev/tty` (never stdin) before sudo loop setup and an ext4 `nosuid,nodev` mount. Discovery keeps state in the calling shell; cleanup traps are installed before acquisition. Every exit syncs, unmounts and detaches; failures return non-zero, warn not to unplug, and retain the lock. Stale-lock recovery is manual by design and requires verification across all distros/hosts; never infer safety from a local PID alone.
 4. **Authoritative credentials**: Authoritative credentials (`claude-oauth-token` and `codex-auth.json`) and cross-platform session locks remain on `AI-SHARED/credentials/`, shared across Windows, macOS, native Linux, and WSL2.
 5. **Host remnants**: Runtime state stays on the drive, but sudo/udisks logs and sudo timestamps may remain on the host. Sudo uses an owned, non-symlink `mktemp -d` mountpoint under `$XDG_RUNTIME_DIR` or `/tmp`; successful cleanup removes it. Crashes or cleanup failures may leave the directory behind. Failure to remove an empty directory warns but releases the lock after verified detach.
-6. **Image creation**: Format a temporary file inside the token-owned drive lock directory with `mkfs.ext4 -E root_owner=UID:GID` (e2fsprogs >= 1.42), then atomically rename it. Failures remove the partial file. `PORTABLE_AI_WSL_IMAGE_SIZE` accepts integer `M`/`G` sizes (default `4G`, minimum `64M`) for new images. Check free space; reject FAT32 files of 4 GiB or larger only on directly visible filesystems. DrvFS reports v9fs/virtiofs, so its file-size limits are handled as allocation errors. exFAT allocates the full size, not sparse storage. Existing images are not resized.
+6. **Image creation**: Format a temporary file inside the token-owned drive lock directory with `mkfs.ext4 -E root_owner=UID:GID` (e2fsprogs >= 1.42), then atomically rename it. Failures remove the partial file. `PORTABLE_AI_WSL_IMAGE_SIZE` accepts integer `M`/`G` sizes (default `4G`, minimum `64M`) for new images. Check free space; reject FAT32 files of 4 GiB or larger only on directly visible filesystems. DrvFS reports v9fs/virtiofs, so its file-size limits are handled as allocation errors. exFAT allocates the full size, not sparse storage. Existing images are not resized. Set this option inside the distro for direct Linux launches; the Windows bridge does not forward Windows environment settings or source profiles.
 7. **Recovery and compatibility**: WSL1 is refused; `PORTABLE_AI_WSL=0` disables detection. Resolve Linux CLIs once before redirecting HOME, searching PATH plus the original HOME’s `.local/bin`, `.npm-global/bin`, `.claude/local`, `.bun/bin`, active/default nvm bins and remaining nvm versions, then `/usr/local/bin` and `/usr/bin`. Prefer nvm’s default alias (`system` prioritizes system bins); never source startup scripts. Preserve each CLI’s original search directory separately from its resolved symlink target, and prepend it to that CLI child’s PATH so `env node` uses the matching runtime. Reject resolved Windows shims, `v9fs|9p|virtiofs|drvfs` binaries and PE executables. Print a `sudo chown UID:GID <mount>` repair command for old/different-UID images with non-writable roots. After an unclean eject, stop all sessions, unmount/detach the image in every distro, then run `e2fsck -f` on the image before removing stale locks/partials. See START-HERE's WSL2 section for recovery. Udisks authorization/service availability and loop-over-DrvFS flush behavior require validation on real WSL2 hardware.
 
-8. **Privileged recovery**: The sudo invocation records attachment identity (diskseq plus backing-file inode/device, loop major/minor, kernel backing inode/device and backing path) and hands it to a detached root watchdog after mounting. Setup rollback and both cleanup paths verify identity before every unmount/detach. Root pins an open loop fd during teardown to prevent generation reuse. Without diskseq, root uses a unique live mount ID plus backing identity, retaining the fd through unmount/detach. Unverifiable identities fail closed with a warning; unprivileged udisks requires diskseq because it cannot safely pin the fallback. A readable foreign token means a successor session owns the image, so the old watchdog exits without action. Our token or an unreadable token allows only teardown of our verified attachment. Normal cleanup uses `sudo -v`, then non-interactive operations; signal cleanup uses only `sudo -n`. The watchdog polls process identity once per second, retries up to 12 times with 240 seconds total backoff, and never lazily unmounts. Recovery logs are created as the invoking UID/GID through `setpriv`, using Python 3 `O_EXCL|O_NOFOLLOW|O_NONBLOCK`, refusing existing/special files, under a 5-second timeout and 1-second kill deadline. Logs live at `state/wsl-state.ext4.recovery.<token>.log`; root never opens that user-controlled log path for writing. A successful detach with changed/unreadable token leaves the lock for manual recovery and reports that the image is detached, without an unplug warning. Failed teardown keeps the warning and lock. Empty mountpoint removal errors only warn. The tiny signal-ignore window during watchdog fork/exec intentionally drops signals. WSL shutdown and power loss still need manual recovery.
+8. **Privileged recovery**: The sudo invocation records attachment identity (diskseq plus backing-file inode/device, loop major/minor, kernel backing inode/device and backing path) and hands it to a detached root watchdog after mounting. Setup rollback and both cleanup paths verify identity before every unmount/detach. Root pins an open loop fd during teardown to prevent generation reuse. Without diskseq, root uses a unique live mount ID plus backing identity, retaining the fd through unmount/detach. Unverifiable identities fail closed with a warning; unprivileged udisks requires diskseq because it cannot safely pin the fallback. A readable foreign token means a successor session owns the image, so the old watchdog exits without action. Our token or an unreadable token allows only teardown of our verified attachment. Normal cleanup uses `sudo -v`, then non-interactive operations; signal cleanup uses only `sudo -n`. The watchdog polls process identity once per second, retries up to 12 times with 240 seconds total backoff, and never lazily unmounts. The sudo backend requires Python 3, `setpriv` and `timeout`. Recovery logs are created as the invoking UID/GID through `setpriv`, using Python 3 `O_EXCL|O_NOFOLLOW|O_NONBLOCK`, refusing existing/special files, under a 5-second timeout and 1-second kill deadline. Logs live at `state/wsl-state.ext4.recovery.<token>.log`; root never opens that user-controlled log path for writing. A successful detach with changed/unreadable token leaves the lock for manual recovery and reports that the image is detached, without an unplug warning. Failed teardown keeps the warning and lock. Empty mountpoint removal errors only warn. The tiny signal-ignore window during watchdog fork/exec intentionally drops signals. WSL shutdown and power loss still need manual recovery.
 
 
 ## First-time login (on any machine)
@@ -148,4 +196,11 @@ long-path support disabled, is still required.
 - Gatekeeper / SmartScreen prompts on first run; managed hosts may block.
 - Linux `noexec` automounts block execution (document `udisksctl` / remount).
 - Browser used for login and the OS itself may leave traces.
+- Booting the WSL2 VM can create `swap.vhdx` in `%TEMP%`, write WSL logs, and grow
+  the distro VHDX. Linux mountpoint and sudo/udisks remnants are described in
+  WSL2 Mode above. These effects are outside the Windows bridge's own
+  no-file-write scope.
+- Real Windows validation remains required under Windows PowerShell 5.1 and
+  pwsh 7.4+, including Ctrl+C/menu return and exit status. Follow the full
+  [Windows WSL validation checklist](../START-HERE.md#windows-wsl-validation-checklist-required-before-merge).
 - An untrusted host can read credentials while the drive is attached.
