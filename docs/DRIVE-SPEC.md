@@ -24,6 +24,25 @@ Shared contract for portable AI drive:
 | 3 | `AI-MAC`     | APFS  | 30%+ of rest     | macOS binaries (arm64 + x64), macOS state/tmp. |
 | 4 | `AI-LINUX`   | ext4  | 30%+ of rest     | Linux binaries (x64 + arm64, musl where available), Linux state/tmp. |
 
+The default helper plan uses 8 GiB for AI-SHARED and splits the rest among
+AI-WIN, AI-MAC and AI-LINUX (the last partition takes the remaining space).
+Optionally pass `--native-size GIB`, a positive integer GiB, to give each of
+those three OS partitions exactly that size and AI-SHARED all remaining usable
+space. AI-SHARED must be at least 8 GiB or the helper refuses before writing.
+It starts at 1 MiB; sizes are MiB-aligned with room reserved for the backup GPT.
+
+For a 512 GB SSD of exactly 512,110,190,592 bytes, preview with:
+
+```sh
+sh provision/partition-linux.sh --device /dev/sdX --native-size 128 --dry-run
+```
+
+Replace `/dev/sdX` with the deliberately selected prep disk. This gives each OS
+137,438,953,472 bytes (128 GiB) and AI-SHARED 99,791,929,344 bytes
+(92.9384765625 GiB, about 92.9 GiB), excluding alignment/GPT space.
+A larger AI-SHARED is fine for exFAT and shared/persistent state, including the
+default 4 GiB WSL2 ext4 image stored as a file on it.
+
 Rationale: exFAT is the only FS every OS reads/writes natively, but it lacks
 symlinks/POSIX perms (Codex `CODEX_HOME` breaks on it). Each OS therefore runs
 binaries and keeps runtime state on its native FS; only plain files cross OSes
