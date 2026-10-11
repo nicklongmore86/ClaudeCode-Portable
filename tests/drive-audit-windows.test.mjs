@@ -45,7 +45,7 @@ for (const shell of ['pwsh', 'powershell']) {
     const env = {...process.env, PSModuleAnalysisCachePath: join(dir, 'host-module-cache'), POWERSHELL_TELEMETRY_OPTOUT: '1'};
     const run = args => {
       const result = spawnSync(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...args], {encoding: 'utf8', env});
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.status, 0, `${shell} exited with status ${result.status} (signal ${result.signal})\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
       return result.stdout;
     };
     // Run the actual helpers too: static tests alone cannot establish PS semantics.
@@ -61,6 +61,8 @@ for (const shell of ['pwsh', 'powershell']) {
       if ((ConvertTo-NormalPath (ConvertTo-ExtendedPath $relative)) -ne [IO.Path]::GetFullPath($relative)) { throw 'relative path normalization failed' }
       if ((ConvertTo-NormalPath (ConvertTo-ExtendedPath 'C:/audit/../short')) -ne 'C:\\short') { throw 'slash/dot normalization failed' }
       try { ConvertTo-ExtendedPath '\\\\.\\PhysicalDrive0'; throw 'device path accepted' } catch [NotSupportedException] { }
+      # -Command/-EncodedCommand exit with $? of the last statement, which a handled catch leaves false.
+      exit 0
     `;
     run(['-EncodedCommand', Buffer.from(pathChecks, 'utf16le').toString('base64')]);
     const stableFile = join(local, 'stable.txt');
@@ -81,7 +83,7 @@ for (const shell of ['pwsh', 'powershell']) {
     assert.ok(beforeRow, 'long-path file must be present');
     assert.equal(fixtureRows(before).length, 2);
     assert.match(beforeRow, /\|\d+$/);
-    const diff = (a, b) => run(['-Command', `& ${quote(scriptPath)} diff ${quote(a)} ${quote(b)} | ConvertTo-Json -Compress`]);
+    const diff = (a, b) => run(['-Command', `& ${quote(scriptPath)} diff ${quote(a)} ${quote(b)} | ForEach-Object { [pscustomobject]@{ InputObject = [string]$_.InputObject; SideIndicator = $_.SideIndicator } } | ConvertTo-Json -Compress`]);
     snapshot(after);
     assert.deepEqual(fixtureRows(before), fixtureRows(after));
     const unchanged = JSON.parse(diff(before, after).trim() || '[]');
@@ -121,6 +123,8 @@ for (const shell of ['pwsh', 'powershell']) {
         throw 'I/O failure swallowed'
       } catch [IO.IOException] { }
       if ($script:attempts.Count -ne 1) { throw 'I/O failure must not retry' }
+      # -Command/-EncodedCommand exit with $? of the last statement, which a handled catch leaves false.
+      exit 0
     `;
     const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {encoding: 'utf8'});
     assert.equal(result.status, 0, result.stderr || result.stdout);
