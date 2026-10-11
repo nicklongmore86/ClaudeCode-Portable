@@ -299,7 +299,7 @@ function wslFixture(t, backend = 'udisks') {
   mock('umount', '[ "$1" = /dev/loop42 ] || exit 97; target=$(cat "$WSL_MOUNTED") || exit 1; rm -rf -- "$target/state" "$target/tmp"; rm -f "$WSL_MOUNTED"');
   mock('claude', 'test -d "$CLAUDE_CONFIG_DIR" && test -d "$CODEX_HOME"; printf "claude-run:%s\\n" "$*"');
   mock('codex', 'printf refreshed > "$CODEX_HOME/auth.json"');
-  f.main = (action = 'exit', extra = {}, prelude = '') => f.run(`drive_wsl_consent() { IFS= read -r answer; [ "$answer" = y ]; }; ${prelude}\ndrive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} ${action}`, extra);
+  f.main = (action = 'claude', extra = {}, prelude = '') => f.run(`drive_wsl_consent() { IFS= read -r answer; [ "$answer" = y ]; }; ${prelude}\ndrive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} ${action}`, extra);
   f.calls = () => existsSync(f.env.WSL_CALLS) ? readFileSync(f.env.WSL_CALLS, 'utf8').trim().split('\n') : [];
   f.lock = join(f.shared, 'state/wsl-state.lock');
   f.image = join(f.shared, 'state/wsl-state.ext4');
@@ -321,12 +321,10 @@ function assertClean(f, backend = 'udisks') {
 for (const [action, input, status, prelude] of [
   ['claude one "two words"', '', 0, ''],
   ['codex', '', 0, ''],
-  ['exit', '', 0, ''],
   ['menu', '6\n', 0, ''],
   ['menu', '', 0, ''],
-  ['dashboard', '', 1, ''],
   ['claude', '', 1, 'drive_resolve_wsl_cli() { return 1; };'],
-  ['exit', '', 1, 'drive_environment() { return 1; };'],
+  ['claude', '', 1, 'drive_environment() { return 1; };'],
 ]) {
   test(`WSL drive_main cleanup: ${action}, input=${JSON.stringify(input)}, prelude=${prelude}`, t => {
     const f = wslFixture(t);
@@ -453,7 +451,7 @@ for (const signal of ['INT', 'TERM']) {
       else if (phase === 'mount') script = script.replace('> "$WSL_MOUNTED";;', `> "$WSL_MOUNTED"; ${trigger};;`);
       else script += `\n${trigger}\n`;
       writeFileSync(path, script);
-      const r = f.main(phase === 'claude' ? 'claude' : 'exit', { input: 'y\n', timeout: 10000 }, 'export LAUNCHER_PID=$$;');
+      const r = f.main('claude', { input: 'y\n', timeout: 10000 }, 'export LAUNCHER_PID=$$;');
       assert.equal(r.status, signal === 'INT' ? 130 : 143, r.stderr);
       assert.ok(!existsSync(f.lock), r.stderr);
       assert.ok(!existsSync(f.env.WSL_ATTACHED), r.stderr);
@@ -492,7 +490,7 @@ for (const failure of ['mount', 'sync', 'deferred-detach', 'sudo-mount', 'sudo-u
       const path = join(f.mocks, 'losetup');
       writeFileSync(path, readFileSync(path, 'utf8').replace('-d) rm', '-d) exit 1; rm'));
     } else if (failure !== 'consent') f.storageMock(failure.replace('sudo-', '').replace('unmount', 'umount'), 'exit 1');
-    const r = f.main('exit', { input: failure === 'consent' ? 'n\n' : 'y\n' });
+    const r = f.main('claude', { input: failure === 'consent' ? 'n\n' : 'y\n' });
     assert.equal(r.status, 1, r.stderr);
     const retained = ['sync', 'deferred-detach', 'sudo-unmount', 'sudo-detach'].includes(failure);
     assert.equal(existsSync(f.lock), retained, r.stderr);
@@ -581,7 +579,7 @@ test('drive_main resets all inherited WSL state before early-exit cleanup', t =>
   Object.assign(f.env, { DRIVE_WSL_LOCK_HELD: '1', DRIVE_WSL_LOCK: victim, DRIVE_WSL_TOKEN: 'injected', DRIVE_WSL_PARTIAL: partial,
     DRIVE_WSL_ATTACH_ATTEMPT: '1', DRIVE_WSL_LOOP_DEV: '/dev/loop42', DRIVE_WSL_BACKEND: 'sudo', DRIVE_WSL_TMP_MOUNT: victim,
     DRIVE_WSL_WATCHDOG: '1', DRIVE_WSL_FUTURE_VAR: 'injected' });
-  const r = f.main('exit', {}, 'drive_discover() { [ -z "${!DRIVE_WSL_@}" ] || exit 99; return 1; };');
+  const r = f.main('claude', {}, 'drive_discover() { [ -z "${!DRIVE_WSL_@}" ] || exit 99; return 1; };');
   assert.equal(r.status, 1, r.stderr);
   assert.equal(readFileSync(join(victim, 'owner'), 'utf8'), 'injected');
   assert.equal(readFileSync(partial, 'utf8'), 'keep');
@@ -596,7 +594,7 @@ for (const phase of ['mkdir', 'partial']) {
     }
     if (phase === 'partial') f.storageMock('truncate', '[ -f "$3" ] || exit 98; kill -TERM "$LAUNCHER_PID"');
     const prelude = 'export LAUNCHER_PID=$$;';
-    const r = f.main('exit', {}, prelude);
+    const r = f.main('claude', {}, prelude);
     assert.equal(r.status, 143, r.stderr);
     assert.ok(!existsSync(f.lock), r.stderr);
     assert.ok(!existsSync(f.image));
@@ -605,7 +603,7 @@ for (const phase of ['mkdir', 'partial']) {
 
 test('WSL cleanup refuses to remove a replaced lock token or its partial', t => {
   const f = wslFixture(t);
-  const r = f.main('exit', {}, 'drive_environment() { printf foreign > "$DRIVE_WSL_LOCK/owner"; printf keep > "$DRIVE_WSL_LOCK/image.partial"; return 1; };');
+  const r = f.main('claude', {}, 'drive_environment() { printf foreign > "$DRIVE_WSL_LOCK/owner"; printf keep > "$DRIVE_WSL_LOCK/image.partial"; return 1; };');
   assert.equal(r.status, 1);
   assert.equal(readFileSync(join(f.lock, 'owner'), 'utf8'), 'foreign');
   assert.equal(readFileSync(join(f.lock, 'image.partial'), 'utf8'), 'keep');
@@ -615,18 +613,143 @@ test('WSL cleanup refuses to remove a replaced lock token or its partial', t => 
   assert.match(r.stderr, /lock token changed or cannot be read/);
 });
 
-test('WSL sudo consent fails clearly without a tty and does not consume piped input', t => {
+test('WSL sudo consent declines piped stdin without consuming it', t => {
   const f = wslFixture(t, 'sudo');
   const r = f.run(`drive_main linux ${quote(join(f.shared, 'launch/linux.sh'))} claude`, { input: 'y\nprompt\n' });
   assert.equal(r.status, 1);
+  assert.match(r.stderr, /stdin is not a terminal.*PORTABLE_AI_WSL_TTY_CONSENT=1/);
+  assert.ok(!f.calls().some(e => e.startsWith('sudo ')));
+  assert.ok(!existsSync(f.lock));
+});
+
+test('WSL opted-in consent without any controlling terminal fails clearly', t => {
+  const f = wslFixture(t, 'sudo');
+  f.env.PORTABLE_AI_WSL_TTY_CONSENT = '1';
+  // setsid detaches from any terminal running the test suite.
+  const r = spawnSync('/usr/bin/setsid', ['-w', 'bash', join(f.shared, 'launch/linux.sh'), 'claude'], { env: f.env, encoding: 'utf8', input: 'y\n', timeout: 10000 });
+  assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /requires a controlling terminal/);
   assert.ok(!f.calls().some(e => e.startsWith('sudo ')));
   assert.ok(!existsSync(f.lock));
 });
 
+// Run linux.sh as a session leader on a fresh pty, like wsl.exe does even when
+// its stdio is redirected. Nobody types unless `answer` is given.
+function ptyLaunch(f, { stdinFile = null, answer = null, action = 'claude' } = {}) {
+  const python = `
+import json, os, pty, select, sys, time
+stdin_file, answer, launcher, action = json.loads(sys.argv[1])
+start = time.time()
+pid, fd = pty.fork()
+if pid == 0:
+    if stdin_file:
+        os.dup2(os.open(stdin_file, os.O_RDONLY), 0)
+    os.execvp('bash', ['bash', launcher, action])
+if answer is not None: os.write(fd, answer.encode())
+output, status = b'', None
+end = time.time() + 15
+while time.time() < end:
+    ready, _, _ = select.select([fd], [], [], 0.1)
+    if ready:
+        try: chunk = os.read(fd, 4096)
+        except OSError: chunk = b''
+        output += chunk
+    done, value = os.waitpid(pid, os.WNOHANG)
+    if done:
+        status = value
+        break
+if status is None:
+    os.kill(pid, 9)
+    _, status = os.waitpid(pid, 0)
+    print(json.dumps({'status': 'hung', 'output': output.decode(errors='replace')}))
+else:
+    print(json.dumps({'status': os.waitstatus_to_exitcode(status), 'elapsed': time.time() - start, 'output': output.decode(errors='replace')}))
+`;
+  const r = spawnSync('python3', ['-c', python, JSON.stringify([stdinFile, answer, join(f.shared, 'launch/linux.sh'), action])], { env: f.env, encoding: 'utf8', timeout: 20000 });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+function assertNothingAcquired(f, created = false) {
+  assert.ok(!existsSync(f.lock));
+  assert.ok(!existsSync(f.image));
+  assert.ok(!existsSync(f.env.WSL_ATTACHED));
+  assert.ok(!existsSync(f.env.WSL_MOUNTED));
+  const forbidden = created ? /^(sudo|mount|losetup --find)( |$)/ : /^(sudo|truncate|mkfs.ext4|mount|udisksctl loop-setup|losetup --find)( |$)/;
+  assert.ok(!f.calls().some(e => forbidden.test(e)), f.calls().join('\n'));
+  assert.ok(!f.calls().some(e => e.startsWith('setsid')), 'no watchdog may start');
+}
+for (const [name, options, env, message] of [
+  ['redirected stdin on a pty declines immediately', { stdinFile: '/dev/null' }, {}, /stdin is not a terminal/],
+  ['interactive pty with no answer times out', {}, { PORTABLE_AI_WSL_CONSENT_TIMEOUT: '1' }, /No answer within 1 seconds; WSL mount declined/],
+  ['opted-in redirected stdin with no answer times out', { stdinFile: '/dev/null' }, { PORTABLE_AI_WSL_TTY_CONSENT: '1', PORTABLE_AI_WSL_CONSENT_TIMEOUT: '1' }, /No answer within 1 seconds/],
+  ['invalid timeout declines', {}, { PORTABLE_AI_WSL_CONSENT_TIMEOUT: '0' }, /must be 1-3600 seconds/],
+  ['explicit no declines', { answer: 'n\n' }, {}, /WSL mount cancelled/],
+]) {
+  test(`WSL sudo consent fails closed before any drive write: ${name}`, t => {
+    const f = wslFixture(t, 'sudo');
+    Object.assign(f.env, { WSL_NOSEQ: '1' }, env); // no diskseq: sudo is needed up front
+    const r = ptyLaunch(f, options);
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.elapsed < 8, `consent took ${r.elapsed}s`);
+    assert.match(r.output, message);
+    assertNothingAcquired(f);
+    assert.ok(!existsSync(join(f.shared, 'state')), 'declined consent must not create AI-SHARED/state');
+  });
+}
+
+test('WSL sudo consent after a failed udisks attach removes the new image on timeout', t => {
+  const f = wslFixture(t, 'sudo'); // udisks looks usable, but loop-setup is refused
+  f.env.PORTABLE_AI_WSL_CONSENT_TIMEOUT = '1';
+  const r = ptyLaunch(f);
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /No answer within 1 seconds/);
+  assert.ok(f.calls().some(e => e.startsWith('mkfs.ext4 ')));
+  assert.ok(f.calls().some(e => e.startsWith('udisksctl loop-setup')));
+  assertNothingAcquired(f, true);
+  assert.deepEqual(readdirSync(join(f.shared, 'state')), []);
+});
+
+test('WSL sudo consent keeps an existing image when declined after a failed udisks attach', t => {
+  const f = wslFixture(t, 'sudo');
+  mkdirSync(join(f.shared, 'state'));
+  writeFileSync(f.image, 'existing user state');
+  const r = f.main('claude', { input: 'n\n' });
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(readFileSync(f.image, 'utf8'), 'existing user state');
+  assert.ok(!existsSync(f.lock));
+  assert.ok(!f.calls().some(e => e.startsWith('sudo ')));
+});
+
+for (const [action, status, check] of [
+  ['exit', 0, null],
+  ['6', 0, null],
+  ['bogus', 1, /Choose claude, codex/],
+  ['dashboard', 1, /Dashboard is not supported in WSL mode/],
+  ['audit', 2, /Usage: audit.sh/],
+  ['audit snapshot', 0, null],
+  ['5 snapshot', 0, null],
+]) {
+  test(`WSL ${action} needs no state: no image, lock, mount or sudo prompt`, t => {
+    for (const backend of ['udisks', 'sudo']) {
+      const f = wslFixture(t, backend);
+      cpSync(join(root, 'tools/audit'), join(f.shared, 'tools/audit'), { recursive: true });
+      const scanned = join(f.dir, 'scanned'), report = join(f.shared, 'logs/before.txt');
+      mkdirSync(scanned); writeFileSync(join(scanned, 'file'), 'x');
+      const args = action.endsWith('snapshot') ? `${action} ${quote(report)} ${quote(scanned)}` : action;
+      const r = f.main(args, {}, 'drive_wsl_consent() { echo consent >> "$WSL_CALLS"; return 0; };');
+      assert.equal(r.status, status, r.stderr);
+      if (check) assert.match(r.stderr, check);
+      if (action.endsWith('snapshot')) assert.match(readFileSync(report, 'utf8'), /scanned\/file\|1\|/);
+      assertNothingAcquired(f);
+      assert.ok(!f.calls().includes('consent'));
+      assert.ok(!existsSync(join(f.shared, 'state')));
+    }
+  });
+}
+
 test('WSL non-writable image root prints ownership repair guidance', t => {
   const f = wslFixture(t);
-  const r = f.main('exit', {}, `
+  const r = f.main('claude', {}, `
     [() { if test "$1" = ! && test "$2" = -w && test "$3" = "$MOCK_NATIVE"; then return 0; fi; builtin [ "$@"; }
   `);
   assert.equal(r.status, 1, r.stderr);
@@ -637,7 +760,7 @@ test('WSL non-writable image root prints ownership repair guidance', t => {
 test('WSL empty mountpoint removal failure warns but releases the lock', t => {
   const f = wslFixture(t, 'sudo');
   f.mock('rmdir', 'case $* in *ai-drive-wsl.*) exit 1;; *) exec /usr/bin/rmdir "$@";; esac');
-  const r = f.main('exit', { input: 'y\n' });
+  const r = f.main('claude', { input: 'y\n' });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stderr, /Warning: empty WSL mountpoint remains/);
   assertClean(f, 'sudo');
@@ -715,6 +838,8 @@ finally:
     except ProcessLookupError: pass
     os.close(fd)
 `;
+  // A redirected stdin needs the explicit opt-in to answer on /dev/tty.
+  f.env.PORTABLE_AI_WSL_TTY_CONSENT = '1';
   const r = spawnSync('python3', ['-c', python], { env: f.env, encoding: 'utf8', timeout: 10000 });
   assert.equal(r.status, 0, r.stderr);
   assertClean(f, 'sudo');
@@ -733,7 +858,7 @@ for (const failure of ['sync', 'umount', 'detach', 'foreign-token']) {
       const path = join(f.mocks, 'losetup');
       writeFileSync(path, readFileSync(path, 'utf8').replace('-d) rm', '-d) exit 1; rm'));
     }
-    const r = f.main('exit', { input: 'y\n' });
+    const r = f.main('claude', { input: 'y\n' });
     assert.equal(r.status, 1, r.stderr);
     await waitFor(() => existsSync(watcherPid), 'watchdog did not start');
     const pid = Number(readFileSync(watcherPid, 'utf8'));
@@ -845,7 +970,7 @@ test('WSL watchdog retries a busy device with bounded backoff, then exits cleanl
     [ "$count" -ge 4 ] || { echo 'target is busy' >&2; exit 32; }
     ${unmountBody}
   `);
-  const r = f.main('exit', { input: 'y\n' });
+  const r = f.main('claude', { input: 'y\n' });
   assert.equal(r.status, 1);
   await waitFor(() => !existsSync(f.lock), 'watchdog failed to retry busy unmount');
   await waitFor(() => !processRunning(Number(readFileSync(watcherPid, 'utf8'))), 'watchdog survived successful retry');
@@ -887,7 +1012,7 @@ for (const mode of ['diskseq-foreign-token', 'diskseq-unreadable-token', 'fallba
     f.storageMock('setsid', `while [ ! -f ${quote(wake)} ]; do /bin/sleep 0.01; done; exec /usr/bin/setsid "$@"`);
     const path = join(f.mocks, 'losetup');
     writeFileSync(path, readFileSync(path, 'utf8').replace('--find) touch', '--find) seq=$(cat "$WSL_SEQ"); echo "$((seq + 1))" > "$WSL_SEQ"; mount_id=$(cat "$WSL_MOUNT_ID"); echo "$((mount_id + 1))" > "$WSL_MOUNT_ID"; touch'));
-    const a = f.main('exit', { input: 'y\n' });
+    const a = f.main('claude', { input: 'y\n' });
     assert.equal(a.status, 0, a.stderr);
     await waitFor(() => existsSync(f.env.WSL_WATCHERS), 'A watchdog did not start');
     const aPid = Number(readFileSync(f.env.WSL_WATCHERS, 'utf8').trim());
@@ -949,7 +1074,7 @@ test('WSL acquisition without diskseq or mount ID rolls back through its own pin
   f.env.WSL_NOSEQ = '1';
   const path = join(f.mocks, 'findmnt');
   writeFileSync(path, readFileSync(path, 'utf8').replace('if [ "$5" = ID,MAJ:MIN,TARGET ]; then', 'if [ "$5" = ID,MAJ:MIN,TARGET ]; then exit 1;'));
-  const r = f.main('exit', { input: 'y\n' });
+  const r = f.main('claude', { input: 'y\n' });
   assert.equal(r.status, 1, r.stderr);
   assertClean(f, 'sudo');
 });
@@ -975,7 +1100,7 @@ test('WSL recovery logging drops to invoking UID/GID under a bounded timeout', a
   f.env.SUDO_UID = '1234'; f.env.SUDO_GID = '5678';
   f.storageMock('sudo', 'case $1 in -v|-n) exit 1;; *) "$@";; esac');
   f.storageMock('sync', 'exit 1');
-  const r = f.main('exit', { input: 'y\n' });
+  const r = f.main('claude', { input: 'y\n' });
   assert.equal(r.status, 1);
   await waitFor(() => f.calls().some(e => e.startsWith('setpriv ')), 'privilege drop was not invoked');
   const invocation = f.calls().find(e => e.startsWith('setpriv '));
@@ -1000,7 +1125,7 @@ for (const backend of ['udisks', 'sudo']) {
 // PR #8 final-review regressions: every storage operation uses fixture mocks.
 test('mn-1 normal sudo cleanup does not warn about an already removed mountpoint', t => {
   const f = wslFixture(t, 'sudo');
-  const r = f.main('exit', { input: 'y\n' });
+  const r = f.main('claude', { input: 'y\n' });
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /empty WSL mountpoint remains/);
   assertClean(f, 'sudo');
@@ -1015,7 +1140,7 @@ drive_wsl_identity_pin() { echo pin >> "$WSL_CALLS"; }
 drive_wsl_identity_close() { echo close >> "$WSL_CALLS"; }
 `);
   f.storageMock('mount', 'printf "%s\\n" "$6" > "$WSL_MOUNTED"; kill -TERM "$PPID"');
-  const r = f.main('exit', { input: 'y\n' });
+  const r = f.main('claude', { input: 'y\n' });
   assert.equal(r.status, 1, r.stderr);
   assertClean(f, 'sudo');
   assert.ok(!existsSync(f.env.WSL_WATCHERS));
@@ -1027,7 +1152,7 @@ drive_wsl_identity_close() { echo close >> "$WSL_CALLS"; }
 test('mn-3 no diskseq chooses sudo before any udisks attachment', t => {
   const f = wslFixture(t);
   f.env.WSL_NOSEQ = '1';
-  const r = f.main('exit', { input: 'y\n' });
+  const r = f.main('claude', { input: 'y\n' });
   assert.equal(r.status, 0, r.stderr);
   assert.ok(!f.calls().some(e => e.startsWith('udisksctl loop-setup')));
   assertClean(f, 'sudo');
@@ -1039,7 +1164,7 @@ for (const dependency of ['python3', 'setpriv', 'timeout']) {
     const helper = join(f.shared, 'launch/lib/wsl-watchdog.sh');
     // Simulate command lookup on a minimal distro without changing host PATH.
     writeFileSync(helper, readFileSync(helper, 'utf8').replace('set -u', `set -u\ncommand() { if [ "$1" = -v ] && [ "$2" = ${dependency} ]; then return 1; fi; builtin command "$@"; }`));
-    const r = f.main('exit', { input: 'y\n' });
+    const r = f.main('claude', { input: 'y\n' });
     assert.equal(r.status, 0, r.stderr);
     assertClean(f, 'sudo');
     // Source functions without executing a mode, then exercise the fallback.

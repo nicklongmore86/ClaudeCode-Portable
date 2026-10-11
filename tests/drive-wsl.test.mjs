@@ -53,6 +53,7 @@ test('WSL paths and argument arrays bypass shell evaluation and inherit the cons
   assert.match(helper, /return \$process.ExitCode/);
   assert.match(helper, /\$info.UseShellExecute = \$false/);
   assert.match(helper, /ConvertTo-WslArgument \$_/);
+  assert.match(helper, /\$info.Arguments = Join-WslArguments \$Arguments/);
 });
 
 test('WSL helper contains no installer, host writes, compiler or native-drive dependency', () => {
@@ -105,8 +106,14 @@ test('Preflight rejects WSL1, supports Sysnative, checks reachability and filter
 test('Production quoting expressions match adversarial Windows argv fixtures', () => {
   const expression = helper.match(/return '"' \+ \[regex\]::Replace\(\[regex\]::Replace\(\$Value, '([^']+)', '([^']+)'\), '([^']+)', '([^']+)'\)/);
   assert.ok(expression);
-  const quote = value => '"' + value.replace(new RegExp(expression[1], 'g'), expression[2]).replace(new RegExp(expression[3], 'g'), expression[4]) + '"';
+  const bare = helper.match(/if \(\$Value -and \$Value -notmatch '([^']+)'\) \{ return \$Value \}/);
+  assert.ok(bare);
+  const quote = value => value && !new RegExp(bare[1]).test(value) ? value
+    : '"' + value.replace(new RegExp(expression[1], 'g'), expression[2]).replace(new RegExp(expression[3], 'g'), expression[4]) + '"';
   const fixtures = [
+    // wsl.exe does not strip quotes from its own options or distro names.
+    ['-l', '-l'], ['-q', '-q'], ['-d', '-d'], ['Ubuntu', 'Ubuntu'], ['--exec', '--exec'],
+    ['C:\\no-space\\', 'C:\\no-space\\'], ['tab\there', '"tab\there"'],
     ['', '""'],
     ['S:\\Drive space\\launch\\linux.sh', '"S:\\Drive space\\launch\\linux.sh"'],
     ['C:\\project space\\', '"C:\\project space\\\\"'],

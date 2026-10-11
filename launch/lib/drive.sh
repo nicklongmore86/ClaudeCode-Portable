@@ -117,12 +117,39 @@ drive_wsl_owns_lock() {
 }
 
 drive_wsl_consent() {
-    # Never consume piped CLI input as a sudo consent response.
-    if ! { IFS= read -r drive_wsl_consent </dev/tty; } 2>/dev/null; then
+    # Fail closed without a human. wsl.exe allocates a pts even when its stdio
+    # is redirected, so /dev/tty can open with nobody watching: require a
+    # terminal stdin (unless explicitly opted in) and bound the wait.
+    if [ ! -t 0 ] && [ "${PORTABLE_AI_WSL_TTY_CONSENT:-0}" != 1 ]; then
+        drive_fail 'WSL sudo mount declined: stdin is not a terminal. Launch interactively, or set PORTABLE_AI_WSL_TTY_CONSENT=1 to answer on /dev/tty while stdin is redirected.'
+        return 1
+    fi
+    drive_wsl_wait=${PORTABLE_AI_WSL_CONSENT_TIMEOUT:-60}
+    case $drive_wsl_wait in ''|0*|*[!0-9]*|?????*) drive_fail 'PORTABLE_AI_WSL_CONSENT_TIMEOUT must be 1-3600 seconds; WSL mount declined.'; return 1;; esac
+    [ "$drive_wsl_wait" -le 3600 ] || { drive_fail 'PORTABLE_AI_WSL_CONSENT_TIMEOUT must be 1-3600 seconds; WSL mount declined.'; return 1; }
+    if ! { : </dev/tty; } 2>/dev/null; then
         drive_fail 'WSL sudo mount requires a controlling terminal (/dev/tty); launch interactively first.'
         return 1
     fi
+    # Never consume piped CLI input as a sudo consent response.
+    # shellcheck disable=SC3045 # Bash-only path: WSL runs linux.sh under bash.
+    IFS= read -r -t "$drive_wsl_wait" drive_wsl_consent </dev/tty 2>/dev/null
+    drive_wsl_read_status=$?
+    if [ "$drive_wsl_read_status" -gt 128 ]; then
+        printf '\n' >&2
+        drive_fail "No answer within $drive_wsl_wait seconds; WSL mount declined."
+        return 1
+    fi
+    [ "$drive_wsl_read_status" = 0 ] || { drive_fail 'WSL mount cancelled.'; return 1; }
     case $drive_wsl_consent in y|Y|yes) return 0;; *) drive_fail 'WSL mount cancelled.';; esac
+}
+
+drive_wsl_sudo_consent() {
+    # Ask once per session, before any image is created or lock is taken.
+    [ "${drive_wsl_sudo_ok:-0}" = 1 ] && return 0
+    printf 'WSL state requires sudo to attach, mount and later unmount the image. Continue? [y/N] ' >&2
+    drive_wsl_consent || return 1
+    drive_wsl_sudo_ok=1
 }
 
 drive_wsl_discover() {
@@ -143,6 +170,10 @@ drive_wsl_discover() {
         fi
     fi
     drive_wsl_img="$drive_wsl_shared/state/wsl-state.ext4"
+    # Decline before touching the drive: no state directory, lock or image.
+    if ! command -v udisksctl >/dev/null 2>&1 || ! drive_wsl_diskseq_available; then
+        drive_wsl_sudo_consent || return 1
+    fi
     mkdir -p "$drive_wsl_shared/state" || return 1
     drive_wsl_lock || return 1
     command -v losetup >/dev/null 2>&1 || { drive_fail 'losetup is required for safe WSL image discovery.'; return 1; }
@@ -176,6 +207,7 @@ drive_wsl_discover() {
         mkfs.ext4 -F -q -E "root_owner=$(id -u):$(id -g)" -L AI-WSL-STATE "$DRIVE_WSL_PARTIAL" || return 1
         mv -- "$DRIVE_WSL_PARTIAL" "$drive_wsl_img" || return 1
         DRIVE_WSL_PARTIAL=
+        DRIVE_WSL_CREATED=1
     fi
 
     # Record acquisition intent BEFORE external commands: a signal can arrive
@@ -213,8 +245,15 @@ drive_wsl_discover() {
         [ -z "$drive_wsl_attached" ] || return 1
     fi
     DRIVE_WSL_BACKEND=sudo
-    printf 'WSL state requires sudo to attach, mount and later unmount the image. Continue? [y/N] ' >&2
-    drive_wsl_consent || return 1
+    # Already answered above unless udisks was usable but failed to attach.
+    if ! drive_wsl_sudo_consent; then
+        # Never leave a declined session's new, never-attached image behind.
+        if [ "${DRIVE_WSL_CREATED:-0}" = 1 ] && drive_wsl_owns_lock &&
+            drive_wsl_attached=$(losetup -j "$drive_wsl_img") && [ -z "$drive_wsl_attached" ]; then
+            rm -f -- "$drive_wsl_img"
+        fi
+        return 1
+    fi
     DRIVE_WSL_TMP_MOUNT=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/ai-drive-wsl.XXXXXX") || return 1
     if [ -L "$DRIVE_WSL_TMP_MOUNT" ] || [ ! -d "$DRIVE_WSL_TMP_MOUNT" ] ||
         [ "$(stat -c %u -- "$DRIVE_WSL_TMP_MOUNT")" != "$(id -u)" ]; then

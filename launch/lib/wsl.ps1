@@ -1,7 +1,14 @@
 # Windows PowerShell 5-compatible WSL entrypoint; no compiler or temporary files.
 function ConvertTo-WslArgument([AllowEmptyString()][string]$Value) {
+    # wsl.exe does not strip quotes from its own options ("-l", -d "Ubuntu"),
+    # so quote only values that need it. Backslashes are literal unless quoted.
+    if ($Value -and $Value -notmatch '[\s"]') { return $Value }
     # Windows CommandLineToArgvW quoting, including embedded quotes and trailing \.
     return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+
+function Join-WslArguments([string[]]$Arguments) {
+    return (($Arguments | ForEach-Object { ConvertTo-WslArgument $_ }) -join ' ')
 }
 
 function ConvertFrom-WslBytes([byte[]]$Bytes, [switch]$List) {
@@ -20,7 +27,7 @@ function Invoke-WslProcess($Executable, [string[]]$Arguments, [switch]$Capture, 
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Executable
     $info.UseShellExecute = $false
-    $info.Arguments = (($Arguments | ForEach-Object { ConvertTo-WslArgument $_ }) -join ' ')
+    $info.Arguments = Join-WslArguments $Arguments
     if ($Capture) {
         $info.RedirectStandardInput = $true
         $info.CreateNoWindow = $true

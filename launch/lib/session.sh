@@ -156,12 +156,25 @@ drive_main() {
     drive_os=$1 drive_entry=$2
     shift 2
     drive_shared=$(CDPATH='' cd -- "$(dirname -- "$drive_entry")/.." && pwd -P) || exit 1
+    drive_action=${1:-menu}
+    [ "$#" -eq 0 ] || shift
+    # Actions without runtime state never mount, create images, lock or prompt
+    # for sudo; that includes the WSL dashboard, which is refused anyway.
+    case $drive_action in
+        5|audit) umask 077; HOME=$drive_host_home sh "$drive_shared/tools/audit/audit.sh" "$@"; exit;;
+        6|exit) exit 0;;
+        3|dashboard)
+            if drive_is_wsl; then
+                drive_fail "Dashboard is not supported in WSL mode. Use launch/windows.cmd for the dashboard on Windows."
+                exit
+            fi;;
+        menu|1|claude|2|codex|4|login) :;;
+        *) drive_fail 'Choose claude, codex, dashboard, login, audit or exit'; exit;;
+    esac
     drive_discover "$drive_os" "$drive_shared" >/dev/null || exit 1
     drive_native=$drive_discovered
     drive_target=$drive_os-$(drive_arch) || exit 1
     drive_environment "$drive_shared" "$drive_native" "$drive_target" || exit 1
-    drive_action=${1:-menu}
-    [ "$#" -eq 0 ] || shift
     while :; do
         if [ "$drive_action" = menu ]; then
             printf '\n1 Claude Code\n2 Codex\n3 Dashboard\n4 Login setup\n5 Audit\n6 Exit\nChoose: '

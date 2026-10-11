@@ -66,6 +66,15 @@ Assert-Equal (ConvertTo-WslArgument 'C:\project space\') '"C:\project space\\"'
 Assert-Equal (ConvertTo-WslArgument 'say "hello"') '"say \"hello\""'
 Assert-Equal (ConvertTo-WslArgument 'a\"b') '"a\\\"b"'
 Assert-Equal (ConvertTo-WslArgument '$(touch nope); & stuff') '"$(touch nope); & stuff"'
+# wsl.exe parses its own options without stripping quotes: "-l" or
+# -d "Ubuntu" fail. Assert the exact command line handed to ProcessStartInfo.
+Assert-Equal (ConvertTo-WslArgument '-l') '-l'
+Assert-Equal (ConvertTo-WslArgument 'C:\no-space\') 'C:\no-space\'
+Assert-Equal (ConvertTo-WslArgument "tab`there") "`"tab`there`""
+Assert-Equal (Join-WslArguments @('-l', '-q')) '-l -q'
+Assert-Equal (Join-WslArguments @('-l', '-v')) '-l -v'
+Assert-Equal (Join-WslArguments @('-d', 'Ubuntu', '--exec', 'wslpath', '-a', 'C:\Drive space\launch\linux.sh')) '-d Ubuntu --exec wslpath -a "C:\Drive space\launch\linux.sh"'
+Assert-Equal (Join-WslArguments @('-d', 'Ubuntu', '--cd', '/mnt/c/project space', '--exec', 'bash', '/mnt/d/launch/linux.sh', 'claude', '', 'say "hi"', 'trailing space\')) '-d Ubuntu --cd "/mnt/c/project space" --exec bash /mnt/d/launch/linux.sh claude "" "say \"hi\"" "trailing space\\"'
 
 # Stub only the external process boundary: exercise real discovery and dispatch.
 $script:calls = [Collections.Generic.List[object]]::new()
