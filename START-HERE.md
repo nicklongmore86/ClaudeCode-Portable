@@ -231,10 +231,19 @@ invoking WSL. This check never writes the registry. Subsequent helper calls use
 or stdin keypresses from accepting an install offer. This behavior still requires
 validation on a host without WSL. Helpers display a starting message and time out after 60 seconds
 (plus bounded cleanup); errors include captured WSL diagnostics. The interactive
-session has no timeout. Arguments and the direct action's exit
+session has no timeout; an unattended sudo consent prompt still declines (see
+below). Arguments and the direct action's exit
 code pass through; prompts remain interactive. This entrypoint needs no AI-WIN
 binaries or supervisor DLL. Native Windows options still use AI-WIN as before.
 Real Windows validation of this entrypoint is still required.
+
+If the Windows-side PowerShell/cmd parent is killed (for example from Task
+Manager) while a session runs, `wsl.exe` and the Linux launcher keep running
+orphaned in that console and keep holding the WSL state lock. To recover, end
+that `wsl.exe` process (Task Manager, or `Get-CimInstance Win32_Process -Filter
+"Name='wsl.exe'"` and match `linux.sh` in its command line, then `Stop-Process`).
+Linux then receives SIGHUP and the launcher's normal cleanup unmounts, detaches
+and releases the lock. If the lock remains, follow the stale-lock recovery below.
 
 When already inside WSL2 (e.g. Ubuntu on Windows), you can still execute the Linux launcher directly:
 
@@ -255,11 +264,25 @@ If `AI-LINUX` is already mounted, the launcher uses that native partition.
 Otherwise it tries `udisksctl` loop setup; this requires a working udisks service
 and authorization policy, which many WSL2 installations lack. If setup is
 unavailable, the launcher asks on `/dev/tty` before using sudo to attach/mount
-the image. Without a controlling terminal it fails clearly; piped CLI input is
-never consumed as consent. It never falls back to host runtime state.
-Linux settings such as `PORTABLE_AI_WSL_IMAGE_SIZE` and `PORTABLE_AI_WSL`
-must be set inside the distro for direct Linux launches; the Windows bridge
-does not forward these Windows environment variables or source shell profiles.
+the image. When `udisksctl` or loop diskseq support is missing, it asks before
+creating `AI-SHARED/state`, the lock or the image; if udisks is present but
+refuses the attach, it asks afterwards and a declined answer removes the image
+it has just created. Consent fails closed: `wsl.exe` gives Linux a pseudo-terminal
+even when its stdio is redirected, so `/dev/tty` existing does not mean a person
+is watching. The launcher therefore declines immediately when stdin is not a
+terminal, unless `PORTABLE_AI_WSL_TTY_CONSENT=1` is set to answer on `/dev/tty`
+while stdin is redirected, and declines when nobody answers within
+`PORTABLE_AI_WSL_CONSENT_TIMEOUT` seconds (default 60, 1-3600). A declined or
+timed-out answer exits non-zero, releases the lock and mounts nothing. Piped CLI
+input is never consumed as consent. It never falls back to host runtime state.
+`audit`, `exit`, unknown actions and the WSL dashboard refusal need no runtime
+state: they run without discovery, so they never create or mount the image,
+take the lock or prompt for sudo.
+Linux settings such as `PORTABLE_AI_WSL_IMAGE_SIZE`, `PORTABLE_AI_WSL` and the
+consent variables must be set inside the distro for direct Linux launches; the
+Windows bridge does not forward these Windows environment variables or source
+shell profiles (a Windows-side `WSLENV`, e.g.
+`PORTABLE_AI_WSL_CONSENT_TIMEOUT/u`, does forward them).
 
 The sudo invocation records the loop attachment's diskseq generation, backing-file
 inode/device and kernel backing metadata, mounts the image, then passes that
